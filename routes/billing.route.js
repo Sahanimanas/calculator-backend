@@ -64,10 +64,14 @@
 
     // Validate project and resource existence
     const project = await Project.findById(project_id);
+    const subproject = await Subproject.findById(subproject_id);
     if (!project) return res.status(404).json({ message: 'Project not found' });
+    const project_name = project.name;
+    const subproject_name = subproject.name;
 
     const resource = await Resource.findById(resource_id);
     if (!resource) return res.status(404).json({ message: 'Resource not found' });
+    const resource_name = resource.name;
 
     const billingMonth = month || new Date().getMonth() + 1;
     const billingYear = year || new Date().getFullYear();
@@ -106,6 +110,9 @@
       project_id,
       subproject_id,
       resource_id,
+      project_name,
+      subproject_name,
+      resource_name,
       month: billingMonth,
       year: billingYear,
       resource_name: resource.name,

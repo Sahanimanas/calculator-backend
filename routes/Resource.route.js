@@ -3,7 +3,8 @@ const router = express.Router();
 const Resource = require('../models/Resource');
 const Project = require('../models/Project');
 const Subproject = require('../models/Subproject.js');
-const mongoose = require('mongoose');   
+const mongoose = require('mongoose');
+const Billing = require('../models/Billing');   
 // const multer = require('multer');
 // const csv = require('csv-parser');
 // const fs = require('fs');
@@ -56,49 +57,87 @@ router.post('/', async (req, res) => {
     if (!name || !role || !email) {
       return res.status(400).json({ message: 'Name, role, and email are required' });
     }
-  if(!avatar_url){
-    avatar_url="https://imgs.search.brave.com/TJfABfGoj8ozO-c1s6H0C8LH0vqWWZvcck4eEPo6f5U/rs:fit:500:0:1:0/g:ce/aHR0cHM6Ly9tZWRp/YS5pc3RvY2twaG90/by5jb20vaWQvMTMz/NzE0NDE0Ni92ZWN0/b3IvZGVmYXVsdC1h/dmF0YXItcHJvZmls/ZS1pY29uLXZlY3Rv/ci5qcGc_cz02MTJ4/NjEyJnc9MCZrPTIw/JmM9QkliRnd1djdG/eFRXdmg1UzN2QjZi/a1QwUXY4Vm44TjVG/ZnNlcTg0Q2xHST0";
-  }
 
-    // 2️⃣ Check for duplicate email
+    // 2️⃣ Default avatar if not provided
+    if (!avatar_url) {
+      avatar_url =
+        'https://imgs.search.brave.com/TJfABfGoj8ozO-c1s6H0C8LH0vqWWZvcck4eEPo6f5U/rs:fit:500:0:1:0/g:ce/aHR0cHM6Ly9tZWRp/YS5pc3RvY2twaG90/by5jb20vaWQvMTMz/NzE0NDE0Ni92ZWN0/b3IvZGVmYXVsdC1h/dmF0YXItcHJvZmls/ZS1pY29uLXZlY3Rv/ci5qcGc_cz02MTJ4/NjEyJnc9MCZrPTIw/JmM9QkliRnd1djdG/eFRXdmg1UzN2QjZi/a1QwUXY4Vm44TjVG/ZnNlcTg0Q2xHST0';
+    }
+
+    // 3️⃣ Check for duplicate email
     const existing = await Resource.findOne({ email });
     if (existing) {
       return res.status(400).json({ message: 'Email already exists' });
     }
 
-    // 3️⃣ Validate ObjectIds if provided
+    // 4️⃣ Validate ObjectIds
     const validProjectIds = Array.isArray(assigned_projects)
-      ? assigned_projects.filter(id => mongoose.Types.ObjectId.isValid(id))
+      ? assigned_projects.filter((id) => mongoose.Types.ObjectId.isValid(id))
       : [];
 
     const validSubProjectIds = Array.isArray(assigned_subprojects)
-      ? assigned_subprojects.filter(id => mongoose.Types.ObjectId.isValid(id))
+      ? assigned_subprojects.filter((id) => mongoose.Types.ObjectId.isValid(id))
       : [];
 
-    // 4️⃣ Create new resource
+    // 5️⃣ Create Resource
     const resource = new Resource({
       name,
       role,
       email,
-      avatar_url: avatar_url || '',
+      avatar_url,
       assigned_projects: validProjectIds,
       assigned_subprojects: validSubProjectIds,
     });
 
     await resource.save();
 
-    // 5️⃣ Respond with success
+    // 6️⃣ Create billing entries if valid assignments exist
+    if (validProjectIds.length > 0 && validSubProjectIds.length > 0) {
+      // Fetch project & subproject details for names
+      const projects = await Project.find({ _id: { $in: validProjectIds } });
+      const subprojects = await Subproject.find({ _id: { $in: validSubProjectIds } });
+
+      const billingRecords = [];
+
+      for (const project of projects) {
+        for (const subproject of subprojects) {
+          billingRecords.push({
+            project_id: project._id,
+            subproject_id: subproject._id,
+            project_name: project.name,
+            subproject_name: subproject.name,
+            resource_id: resource._id,
+            resource_name: resource.name,
+            productivity_level: 'Medium', // default
+            hours: 0,
+            rate: 0,
+            total_amount: 0,
+            billable_status: 'Non-Billable',
+            description: `Auto-generated billing for ${resource.name}`,
+            month: null,
+            year: new Date().getFullYear(),
+          });
+        }
+      }
+
+
+
+      // Insert billing in bulk
+      if (billingRecords.length > 0) {
+        await Billing.insertMany(billingRecords);
+      }
+    }
+console.log(Billing)
+    // 7️⃣ Response
     res.status(201).json({
       message: 'Resource created successfully',
       resource,
     });
-
   } catch (err) {
     console.error('Error creating resource:', err);
     res.status(500).json({ message: err.message });
   }
 });
-
 
 // --- UPDATE resource ---
 router.put('/:id', async (req, res) => {

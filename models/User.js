@@ -2,9 +2,9 @@
 const mongoose = require('mongoose');
 
 const UserSchema = new mongoose.Schema({
-  full_name: { type: String, required: true },
+  full_name: { type: String },
   email: { type: String, required: true, unique: true },
-  role: { type: String, required: true },
+  role: { type: String},
   status: { type: String, default: 'active' },
   avatar_url: String,
   password_hash: { type: String, required: true },

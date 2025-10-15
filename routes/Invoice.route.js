@@ -27,14 +27,37 @@ router.post('/', async (req, res) => {
 
 // --- GET ALL INVOICES ---
 router.get('/', async (req, res) => {
-    try {
-        const invoices = await Invoice.find().populate('billing_records').sort({ createdAt: -1 });
-        res.json(invoices);
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Failed to fetch invoices' });
-    }
+  try {
+    const invoices = await Invoice.find()
+      .populate({
+        path: 'billing_records',
+        populate: [
+          { path: 'project_id', select: 'name' },
+          { path: 'subproject_id', select: 'name' },
+          { path: 'resource_id', select: 'name' }
+        ]
+      })
+      .sort({ createdAt: -1 });
+
+    // Add project_name and subproject_name inline without removing anything
+    const invoicesWithNames = invoices.map(inv => {
+      const invObj = inv.toObject();
+      invObj.billing_records = invObj.billing_records.map(bill => ({
+        ...bill,
+        project_name: bill.project_id?.name || bill.project_name || null,
+        subproject_name: bill.subproject_id?.name || bill.subproject_name || null,
+        resource_name: bill.resource_id?.name || bill.resource_name || null,
+      }));
+      return invObj;
+    });
+
+    res.json(invoicesWithNames);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Failed to fetch invoices' });
+  }
 });
+
 
 // --- GET SINGLE INVOICE ---
 router.get('/:id', async (req, res) => {

@@ -14,17 +14,20 @@ const HARD_CODED_USER = {
 };
 
 // ================= Login =================
-router.post('/login', (req, res) => {
+router.post('/login', async(req, res) => {
   const { email, password } = req.body;
 
   if (!email || !password) {
     return res.status(400).json({ message: 'Email and password required' });
   }
 
+  const user= await User.findOne({ email: email, password_hash: password });
+
   // Check if input matches hardcoded credentials
-  if (email === HARD_CODED_USER.email && password === HARD_CODED_USER.password) {
+  if (!user) {return res.status(401).json({ message: 'Invalid credentials' });}
+
     const token = jwt.sign(
-      { id: 1, email: HARD_CODED_USER.email, role: HARD_CODED_USER.role },
+      { id: user._id, email: user.email, role: user.role },
       JWT_SECRET,
       { expiresIn: '7d' }
     );
@@ -37,23 +40,20 @@ router.post('/login', (req, res) => {
         role: HARD_CODED_USER.role
       }
     });
-  } else {
-    return res.status(401).json({ message: 'Invalid credentials' });
-  }
+  
 });
 
 router.post('/register', (req, res) => {
   const { email, password, full_name, role } = req.body;
 
-  if (!email || !password || !full_name || !role) {
+  if (!email || !password ) {
     return res.status(400).json({ message: 'All fields are required' });
   }
 
   const user = new User({
     email,
     password_hash: password, // In real apps, hash the password
-    full_name,
-    role
+
   });
 
   user.save().then(() => {
@@ -70,11 +70,7 @@ router.post('/register', (req, res) => {
 
   
   return res.status(201).json({
-    user: {
-      email,
-      full_name,
-      role
-    }
+   message: 'User registered successfully',
   });
 });
 
