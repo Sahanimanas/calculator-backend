@@ -12,39 +12,48 @@
   // const { body, query, param, validationResult } = require('express-validator');
 
   // ================= GET billing records =================
-  router.get(
-    '/',
-    
-    async (req, res) => {
-      const { project_id, subproject_id, month, year, billable_status } = req.query;
+ router.get('/', async (req, res) => {
+  const { project_id, subproject_id, month, year, billable_status } = req.query;
 
-      try {
-        const filters = {};
-        if (project_id) filters.project_id = project_id;
-        if (subproject_id) filters.subproject_id = subproject_id;
-        if (month) filters.month = parseInt(month);
-        if (year) filters.year = parseInt(year);
-        if (billable_status) filters.billable_status = billable_status;
+  try {
+    const filters = {};
+    if (project_id) filters.project_id = project_id;
+    if (subproject_id) filters.subproject_id = subproject_id;
 
-        const billings = await Billing.find(filters)
-          .populate('project_id', 'name')
-          .populate('subproject_id', 'name')
-          .sort({ created_at: -1 })
-          .lean();
-
-        const response = billings.map(b => ({
-          ...b,
-          project_name: b.project_id?.name || null,
-          subproject_name: b.subproject_id?.name || null
-        }));
-
-        res.json(response);
-      } catch (err) {
-        console.error(err);
-        res.status(500).json({ message: err.message });
-      }
+    // Handle month filter
+    if (month === 'null') {
+      console.log('Filtering for null month');
+      filters.month = { $in: [null, undefined] }; // Match missing or null
+    } else if (month) {
+      filters.month = parseInt(month);
     }
-  );
+
+    // Handle year filter
+    if (year) {filters.year = parseInt(year)}
+    else filters.year = new Date().getFullYear();
+
+
+    if (billable_status) filters.billable_status = billable_status;
+
+    const billings = await Billing.find(filters)
+      .populate('project_id', 'name')
+      .populate('subproject_id', 'name')
+      .sort({ created_at: -1 })
+      .lean();
+
+    const response = billings.map(b => ({
+      ...b,
+      project_name: b.project_id?.name || null,
+      subproject_name: b.subproject_id?.name || null
+    }));
+
+    res.json(response);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
 
   // ================= CREATE billing record =================
  router.post('/', async (req, res) => {
@@ -54,6 +63,7 @@
       subproject_id,
       resource_id,
       productivity_level,
+      flatrate,
       hours,
       rate,
       description,
@@ -81,18 +91,21 @@
       project_id,
       subproject_id,
       resource_id,
-      month: billingMonth,
-      year: billingYear,
+      
     });
-
+// console.log(existingBilling  )
     if (existingBilling) {
       // Option 1: Update the existing record (append new data)
       existingBilling.productivity_level =
         productivity_level || existingBilling.productivity_level;
       existingBilling.hours = hours ?? existingBilling.hours;
       existingBilling.rate = rate ?? existingBilling.rate;
-      existingBilling.total_amount =
+      existingBilling.costing =
         (hours ?? existingBilling.hours) * (rate ?? existingBilling.rate);
+        existingBilling.total_amount =
+        (hours ?? existingBilling.hours) * (rate ?? existingBilling.flatrate);
+      existingBilling.month = billingMonth;
+      existingBilling.year = billingYear;
       existingBilling.billable_status =
         billable_status || existingBilling.billable_status;
       existingBilling.description = description || existingBilling.description;
@@ -114,6 +127,7 @@
       subproject_name,
       resource_name,
       month: billingMonth,
+      flatrate: flatrate || 0,
       year: billingYear,
       resource_name: resource.name,
       resource_role: resource.role,
@@ -232,11 +246,12 @@
 
       Object.assign(billing, req.body);
 
-      if (req.body.hours || req.body.rate) {
-        billing.total_amount = (billing.hours || 0) * (billing.rate || 0);
+      if (req.body.hours || req.body.flatrate ) {
+        billing.total_amount = (billing.hours || 0) * (billing.flatrate || 0);
+        billing.costing = (billing.hours || 0) * (billing.rate || 0);
       }
 
-      billing.updated_at = new Date();
+
       await billing.save();
 
       // await AuditLog.create({

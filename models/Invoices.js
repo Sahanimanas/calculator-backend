@@ -13,23 +13,19 @@ const InvoiceSchema = new mongoose.Schema({
   total_non_billable_hours: { type: Number, default: 0 },
   total_billable_amount: { type: Number, default: 0 },
   total_non_billable_amount: { type: Number, default: 0 },
-  total_amount: { type: Number, default: 0 },
-  status: { 
-    type: String, 
-    enum: ['draft', 'sent', 'paid', 'overdue', 'cancelled'], 
-    default: 'draft' 
-  },
+  total_billing_amount: { type: Number, default: 0 }, // renamed from total_amount
+  total_costing_amount: { type: Number, default: 0 }, // new field
 }, { timestamps: true });
 
 // Helper method to calculate totals from billing records
-// Helper method to calculate totals from billing records
 InvoiceSchema.methods.calculateTotals = async function () {
-  await this.populate('billing_records'); // just await populate, no execPopulate()
+  await this.populate('billing_records');
 
   let billableHours = 0;
   let nonBillableHours = 0;
   let billableAmount = 0;
   let nonBillableAmount = 0;
+  let totalCostingAmount = 0;
 
   this.billing_records.forEach(bill => {
     if (bill.billable_status === 'Billable') {
@@ -39,26 +35,29 @@ InvoiceSchema.methods.calculateTotals = async function () {
       nonBillableHours += bill.hours || 0;
       nonBillableAmount += bill.total_amount || 0;
     }
+
+    // Include costing calculation
+    totalCostingAmount += bill.costing || 0;
   });
 
   this.total_billable_hours = billableHours;
   this.total_non_billable_hours = nonBillableHours;
   this.total_billable_amount = billableAmount;
   this.total_non_billable_amount = nonBillableAmount;
-  this.total_amount = billableAmount + nonBillableAmount;
+  this.total_costing_amount = totalCostingAmount;
+  this.total_billing_amount = billableAmount + nonBillableAmount;
 
   return this;
 };
 
 // Pre-save hook to generate invoice number automatically
 InvoiceSchema.pre('validate', async function(next) {
-  if (this.invoice_number) return next(); // already has a number
+  if (this.invoice_number) return next();
 
   const now = new Date();
   const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0'); // month: 01-12
+  const month = String(now.getMonth() + 1).padStart(2, '0');
 
-  // Count invoices created this month
   const count = await mongoose.model('Invoice').countDocuments({
     createdAt: {
       $gte: new Date(`${year}-${month}-01T00:00:00.000Z`),

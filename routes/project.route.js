@@ -34,6 +34,7 @@ router.get('/project-subproject', async (req, res) => {
     const result = projects.map(project => ({
       _id: project._id,
       name: project.name,
+      flatrate: project.flatrate || 0,
       description: project.description,
       visibility: project.visibility,
       created_on: project.created_on,
@@ -61,8 +62,8 @@ router.get('/project-subproject', async (req, res) => {
 // ================= CREATE project =================
 router.post('/',   async (req, res) => {
   try {
-    
-    let { name, description, visibility } = req.body;
+
+    let { name, description, visibility , projectPrice } = req.body;
     if(!name){
         return res.status(400).json({ message: 'Project name is required' });
     }
@@ -76,7 +77,7 @@ router.post('/',   async (req, res) => {
       name,
       description,
       visibility,
-    //    
+      flatrate: projectPrice || 0,
     });
     await project.save();
 

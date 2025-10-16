@@ -11,6 +11,8 @@ const BillingSchema = new mongoose.Schema({
   productivity_level: String,
   hours: Number,
   rate: Number,
+  flatrate: { type: Number, default: 0 },
+  costing:Number,
   total_amount: Number,
   billable_status: { type: String, default: 'Non-Billable' },
   description: String,

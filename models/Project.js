@@ -7,6 +7,7 @@ const ProjectSchema = new mongoose.Schema({
   description: String,
   visibility: { type: String, enum: ['visible', 'hidden'], default: 'visible' },
   status: { type: String, enum: ['active', 'inactive'], default: 'active' },
+  flatrate: {type: Number, default: 0},
 }, { timestamps: { createdAt: 'created_on', updatedAt: 'updated_at' } });
 
 // Cascade delete Subprojects and their Productivities

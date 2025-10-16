@@ -4,7 +4,8 @@ const Resource = require('../models/Resource');
 const Project = require('../models/Project');
 const Subproject = require('../models/Subproject.js');
 const mongoose = require('mongoose');
-const Billing = require('../models/Billing');   
+const Billing = require('../models/Billing');  
+const SubprojectProductivity = require('../models/SubprojectProductivity'); 
 // const multer = require('multer');
 // const csv = require('csv-parser');
 // const fs = require('fs');
@@ -48,12 +49,11 @@ router.get('/:id', async (req, res) => {
   res.json(resource);
 });
 
-// --- CREATE resource ---
 router.post('/', async (req, res) => {
   try {
     let { name, role, email, assigned_projects, assigned_subprojects, avatar_url } = req.body;
 
-    // 1️⃣ Basic validation
+    // 1️⃣ Validation
     if (!name || !role || !email) {
       return res.status(400).json({ message: 'Name, role, and email are required' });
     }
@@ -72,11 +72,11 @@ router.post('/', async (req, res) => {
 
     // 4️⃣ Validate ObjectIds
     const validProjectIds = Array.isArray(assigned_projects)
-      ? assigned_projects.filter((id) => mongoose.Types.ObjectId.isValid(id))
+      ? assigned_projects.filter(id => mongoose.Types.ObjectId.isValid(id))
       : [];
 
     const validSubProjectIds = Array.isArray(assigned_subprojects)
-      ? assigned_subprojects.filter((id) => mongoose.Types.ObjectId.isValid(id))
+      ? assigned_subprojects.filter(id => mongoose.Types.ObjectId.isValid(id))
       : [];
 
     // 5️⃣ Create Resource
@@ -88,19 +88,36 @@ router.post('/', async (req, res) => {
       assigned_projects: validProjectIds,
       assigned_subprojects: validSubProjectIds,
     });
-
     await resource.save();
 
-    // 6️⃣ Create billing entries if valid assignments exist
-    if (validProjectIds.length > 0 && validSubProjectIds.length > 0) {
-      // Fetch project & subproject details for names
-      const projects = await Project.find({ _id: { $in: validProjectIds } });
-      const subprojects = await Subproject.find({ _id: { $in: validSubProjectIds } });
+    // 6️⃣ Create Billing entries if valid assignments exist
+    if (validProjectIds.length && validSubProjectIds.length) {
+      const [projects, subprojects, productivityData] = await Promise.all([
+        Project.find({ _id: { $in: validProjectIds } }),
+        Subproject.find({ _id: { $in: validSubProjectIds } }),
+        SubprojectProductivity.find({
+          project_id: { $in: validProjectIds },
+          subproject_id: { $in: validSubProjectIds },
+        }),
+      ]);
 
       const billingRecords = [];
 
       for (const project of projects) {
         for (const subproject of subprojects) {
+          // Find matching productivity
+          const prod = productivityData.find(
+            (p) =>
+              p.project_id.toString() === project._id.toString() &&
+              p.subproject_id.toString() === subproject._id.toString()
+          );
+
+          const productivity_level = prod ? prod.level : 'medium';
+          const rate = prod ? prod.base_rate : 0;
+
+          // ✅ Include flatrate from the Project model
+          const flatrate = project.flatrate || 0;
+
           billingRecords.push({
             project_id: project._id,
             subproject_id: subproject._id,
@@ -108,9 +125,11 @@ router.post('/', async (req, res) => {
             subproject_name: subproject.name,
             resource_id: resource._id,
             resource_name: resource.name,
-            productivity_level: 'Medium', // default
+            productivity_level,
+            rate,
+            flatrate,
+            costing: 0,
             hours: 0,
-            rate: 0,
             total_amount: 0,
             billable_status: 'Non-Billable',
             description: `Auto-generated billing for ${resource.name}`,
@@ -119,18 +138,15 @@ router.post('/', async (req, res) => {
           });
         }
       }
-
-
-
-      // Insert billing in bulk
-      if (billingRecords.length > 0) {
+console.log(billingRecords)
+      if (billingRecords.length) {
         await Billing.insertMany(billingRecords);
       }
     }
-console.log(Billing)
+
     // 7️⃣ Response
     res.status(201).json({
-      message: 'Resource created successfully',
+      message: 'Resource and billing created successfully',
       resource,
     });
   } catch (err) {
