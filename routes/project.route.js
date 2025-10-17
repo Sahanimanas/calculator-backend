@@ -102,8 +102,24 @@ router.put('/:id',   async (req, res) => {
   try {
     const project = await Project.findById(req.params.id);
     if (!project) return res.status(404).json({ message: 'Project not found' });
+   
+    const { name, description, visibility , projectPrice} = req.body;
+    if(!name){
+        return res.status(400).json({ message: 'Project name is required' });
+    }
+    if(visibility==true){
+        visibility='visible';
+    }
+    if(visibility==false){
+        visibility='hidden';
+    }
+    // Update fields directly
+    project.name = name ?? project.name;
+    project.description = description ?? project.description;
+    project.visibility = visibility ?? project.visibility;
+    project.flatrate = projectPrice  || project.flatrate;
 
-    Object.assign(project, req.body);
+    // Save updated document
     await project.save();
 
     // await AuditLog.create({

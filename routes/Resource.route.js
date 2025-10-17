@@ -131,7 +131,7 @@ router.post('/', async (req, res) => {
             costing: 0,
             hours: 0,
             total_amount: 0,
-            billable_status: 'Non-Billable',
+            billable_status: 'Billable',
             description: `Auto-generated billing for ${resource.name}`,
             month: null,
             year: new Date().getFullYear(),
