@@ -62,42 +62,51 @@ router.get('/project-subproject', async (req, res) => {
 
 // ================= CREATE project =================
 router.post('/', async (req, res) => {
+  console.log("This is the body from the frontend: ", req.body);
   try {
-
     let { name, description, visibility, projectPrice } = req.body;
-    if (!name) {
+
+    if (!name || !name.trim()) {
       return res.status(400).json({ message: 'Project name is required' });
     }
-    if (visibility == true) {
+
+    // Normalize project name (trim + lowercase for case-insensitive comparison)
+    const normalizedName = name.trim().toLowerCase();
+
+    // Check if project already exists (case-insensitive)
+    const existingProject = await Project.findOne({
+      name: { $regex: new RegExp(`^${normalizedName}$`, 'i') }
+    });
+
+    if (existingProject) {
+      return res.status(409).json({ message: 'Project with this name already exists' });
+    }
+
+    // Normalize visibility to 'visible' or 'hidden'
+    if (visibility === true || visibility === 'true') {
       visibility = 'visible';
-    }
-    if (visibility == false) {
+    } else if (visibility === false || visibility === 'false') {
       visibility = 'hidden';
+    } else {
+      visibility = 'visible'; // default fallback
     }
+
+    // Create and save new project
     const project = new Project({
-      name,
+      name: name.trim(),
       description,
       visibility,
       flatrate: projectPrice || 0,
     });
-    await project.save();
 
-    // await AuditLog.create({
-    //   user_id: req.user._id,
-    //   action: 'CREATE',
-    //   entity_type: 'Project',
-    //   entity_id: project._id,
-    //   description: `User ${req.user.email} created project ${name}`,
-    //   details: { name, visibility }
-    // });
+    await project.save();
 
     res.status(201).json(project);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: err.message });
+    console.error('Error creating project:', err);
+    res.status(500).json({ message: 'Internal Server Error' });
   }
 });
-
 // ================= UPDATE project =================
 router.put('/:id', async (req, res) => {
   try {
@@ -207,40 +216,49 @@ router.get('/sub-project', async (req, res) => {
 router.post('/sub-project', async (req, res) => {
   try {
     const { project_id, name, description, subProjectPrice } = req.body;
+
     if (!project_id || !name) {
-      return res.status(400).json({ message: 'Project ID, Sub-project name, description, and status are required' });
+      return res.status(400).json({ message: 'Project ID and Sub-project name are required' });
     }
 
+    // Verify parent project exists
     const parentProject = await Project.findById(project_id);
-    if (!parentProject) return res.status(404).json({ message: 'Parent project not found' });
+    if (!parentProject) {
+      return res.status(404).json({ message: 'Parent project not found' });
+    }
 
+    // Normalize and validate name (trim + lowercase for duplicate check)
+    const normalizedName = name.trim().toLowerCase();
+
+    // Check for duplicate subproject under the same parent project (case-insensitive)
+    const existingSubProject = await SubProject.findOne({
+      project_id,
+      name: { $regex: new RegExp(`^${normalizedName}$`, 'i') },
+    });
+
+    if (existingSubProject) {
+      return res
+        .status(409)
+        .json({ message: `Sub-project with this name already exists under "${parentProject.name}"` });
+    }
+
+    // Create subproject
     const subProject = new SubProject({
       project_id,
-      name,
+      name: name.trim(),
       description,
-      flatrate: subProjectPrice,
-
-
+      flatrate: subProjectPrice || 0,
+      status: 'active',
     });
-    await subProject.save();
 
-    // await AuditLog.create({
-    //   user_id: req.user._id,
-    //   action: 'CREATE',
-    //   entity_type: 'SubProject',
-    //   entity_id: subProject._id,
-    //   description: `User ${req.user.email} created sub-project ${name} under project ${parentProject.name}`,
-    //   details: { name, parent_project: parentProject.name, status }
-    // });
+    await subProject.save();
 
     res.status(201).json(subProject);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: err.message });
+    console.error('Error creating sub-project:', err);
+    res.status(500).json({ message: 'Internal Server Error' });
   }
 });
-
-
 // ================= UPDATE sub-project =================
 router.put('/subproject/:id', async (req, res) => {
   try {
