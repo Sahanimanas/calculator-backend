@@ -1,5 +1,8 @@
 // models/Invoice.js
 const mongoose = require('mongoose');
+const { nanoid } = require('nanoid'); // <-- add this import at the top
+const crypto = require('crypto');
+
 
 const InvoiceSchema = new mongoose.Schema({
   invoice_number: { type: String, required: true, unique: true },
@@ -51,22 +54,27 @@ InvoiceSchema.methods.calculateTotals = async function () {
 };
 
 // Pre-save hook to generate invoice number automatically
-InvoiceSchema.pre('validate', async function(next) {
+// Pre-save hook to generate invoice number automatically
+InvoiceSchema.pre('validate', async function (next) {
   if (this.invoice_number) return next();
 
   const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const dd = String(now.getDate()).padStart(2, '0');
+
+  // Count existing invoices this month to get sequential numbering
+  const startOfMonth = new Date(yyyy, now.getMonth(), 1);
+  const endOfMonth = new Date(yyyy, now.getMonth() + 1, 0, 23, 59, 59, 999);
 
   const count = await mongoose.model('Invoice').countDocuments({
-    createdAt: {
-      $gte: new Date(`${year}-${month}-01T00:00:00.000Z`),
-      $lte: new Date(`${year}-${month}-31T23:59:59.999Z`)
-    }
+    createdAt: { $gte: startOfMonth, $lte: endOfMonth }
   });
 
-  const sequence = String(count + 1).padStart(3, '0');
-  this.invoice_number = `INV-${year}-${month}-${sequence}`;
+  const sequence = String(count + 1).padStart(3, '0'); // e.g. 001, 002, etc.
+  const randomSuffix = crypto.randomBytes(3).toString('hex').toUpperCase(); // 6 random hex chars
+
+  this.invoice_number = `INV-${yyyy}${mm}${dd}-${sequence}-${randomSuffix}`;
 
   next();
 });
