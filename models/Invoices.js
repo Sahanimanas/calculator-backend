@@ -69,7 +69,7 @@ InvoiceSchema.methods.calculateTotals = function () {
   this.total_billable_amount = billableAmount;
   this.total_non_billable_amount = nonBillableAmount;
   this.total_costing_amount = totalCostingAmount;
-  this.total_billing_amount = bill.total_amount;
+  this.total_billing_amount = billableAmount;
 
   return this;
 };
