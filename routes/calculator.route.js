@@ -7,144 +7,170 @@ const Project = require('../models/Project');
 const Subproject = require('../models/Subproject.js');
 const Resource = require('../models/Resource');
 
-/**
- * POST /billing/calculate
- * Read-only API: Returns billing breakdown filtered by project, subproject, resource, month, year, etc.
- */
+
 router.post('/calculate', async (req, res) => {
   try {
     const {
       project_id,
       subproject_id,
       resource_id,
-      month, // can be "January 2025"
+      month, // e.g. "October 2025"
       billable_status,
-      productivity_level
+      productivity_level,
     } = req.body;
 
     if (!project_id) {
       return res.status(400).json({ message: 'Project ID required' });
     }
 
-    const project = await Project.findById(project_id);
+    // 🔹 Convert string IDs to ObjectIds
+    const projectObjectId = new mongoose.Types.ObjectId(project_id);
+    const subprojectObjectId = subproject_id
+      ? new mongoose.Types.ObjectId(subproject_id)
+      : null;
+    const resourceObjectId = resource_id
+      ? new mongoose.Types.ObjectId(resource_id)
+      : null;
+
+    // 🔹 Find project
+    const project = await Project.findById(projectObjectId);
     if (!project) {
       return res.status(404).json({ message: 'Project not found' });
     }
 
-    // 🔹 Parse month string like "January 2025"
+    // 🔹 Parse "Month Year"
     let parsedMonth = null;
     let parsedYear = null;
-
     if (month) {
       const match = month.match(/^([A-Za-z]+)\s+(\d{4})$/);
       if (match) {
         const monthNames = [
           'january', 'february', 'march', 'april', 'may', 'june',
-          'july', 'august', 'september', 'october', 'november', 'december'
+          'july', 'august', 'september', 'october', 'november', 'december',
         ];
-        parsedMonth = monthNames.indexOf(match[1].toLowerCase()) + 1; // 1–12
-        parsedYear = parseInt(match[2], 10);
-      } else if (!isNaN(month)) {
-        parsedMonth = Number(month);
+        parsedMonth = monthNames.indexOf(match[1].toLowerCase()) + 1;
+        parsedYear = parseInt(match[2]);
       }
     }
 
-    // 🔹 Build filter conditions for embedded billing_records
+    // 🔹 Build match conditions
     const matchConditions = {
-      'billing_records.project_id': project_id
+      'billing_records.project_id': projectObjectId,
     };
-
-    if (subproject_id) matchConditions['billing_records.subproject_id'] = subproject_id;
-    if (resource_id) matchConditions['billing_records.resource_id'] = resource_id;
+    if (subprojectObjectId)
+      matchConditions['billing_records.subproject_id'] = subprojectObjectId;
+    if (resourceObjectId)
+      matchConditions['billing_records.resource_id'] = resourceObjectId;
     if (parsedMonth) matchConditions['billing_records.month'] = parsedMonth;
     if (parsedYear) matchConditions['billing_records.year'] = parsedYear;
-    if (billable_status) matchConditions['billing_records.billable_status'] = billable_status;
-    if (productivity_level) matchConditions['billing_records.productivity_level'] = productivity_level;
+    if (billable_status)
+      matchConditions['billing_records.billable_status'] = billable_status;
+    if (productivity_level)
+      matchConditions['billing_records.productivity_level'] = productivity_level;
 
-    // 🔹 Fetch invoices and unwind billing records
+    console.log('🧩 Match Conditions:', matchConditions);
+
+    // 🔹 Aggregation: latest record per (project, subproject, resource)
     const results = await Invoice.aggregate([
       { $unwind: '$billing_records' },
       { $match: matchConditions },
       {
-        $lookup: {
-          from: 'projects',
-          localField: 'billing_records.project_id',
-          foreignField: '_id',
-          as: 'project'
-        }
+        $sort: {
+          'billing_records.project_id': 1,
+          'billing_records.subproject_id': 1,
+          'billing_records.resource_id': 1,
+          createdAt: -1,
+        },
       },
       {
-        $lookup: {
-          from: 'subprojects',
-          localField: 'billing_records.subproject_id',
-          foreignField: '_id',
-          as: 'subproject'
-        }
+        $group: {
+          _id: {
+            project_id: '$billing_records.project_id',
+            subproject_id: '$billing_records.subproject_id',
+            resource_id: '$billing_records.resource_id',
+          },
+          latestRecord: { $first: '$billing_records' },
+          invoiceCreatedAt: { $first: '$createdAt' },
+        },
       },
       {
         $lookup: {
           from: 'resources',
-          localField: 'billing_records.resource_id',
+          localField: 'latestRecord.resource_id',
           foreignField: '_id',
-          as: 'resource'
-        }
+          as: 'resource',
+        },
       },
       {
         $addFields: {
-          'project': { $arrayElemAt: ['$project', 0] },
-          'subproject': { $arrayElemAt: ['$subproject', 0] },
-          'resource': { $arrayElemAt: ['$resource', 0] }
-        }
-      }
+          resource: { $arrayElemAt: ['$resource', 0] },
+        },
+      },
     ]);
 
+    // 🧾 No Results
     if (!results.length) {
-      return res.status(200).json({ message: 'No billing records found for this filter.' });
+      return res.status(200).json({
+        message: 'No billing records found for this filter.',
+        total_cost: 0,
+        total_hours: 0,
+        breakdown: [],
+      });
     }
 
-    // 🔹 Calculate totals
+    // 🔹 Calculate totals (Non-billable => total_amount = 0)
     let total_cost = 0;
     let total_hours = 0;
 
-    const breakdown = results.map(item => {
-      const record = item.billing_records;
-      total_cost += record.total_amount || 0;
+    const breakdown = results.map((item) => {
+      const record = item.latestRecord;
+
+      // Billable logic
+      const effectiveAmount =
+        record.billable_status === 'Non-Billable' ? 0 : record.total_amount || 0;
+
+      total_cost += effectiveAmount;
       total_hours += record.hours || 0;
 
       return {
-        project_name: record.project_name || item.project?.name,
-        subproject_name: record.subproject_name || item.subproject?.name,
-        resource_name: record.resource_name || item.resource?.name,
+        project_name: record.project_name || project.name,
+        subproject_name: record.subproject_name || null,
+        resource_name: item.resource?.name || record.resource_name || null,
         resource_role: item.resource?.role || null,
         productivity_level: record.productivity_level,
         hours: record.hours,
         rate: record.rate,
         flatrate: record.flatrate,
         costing: record.costing,
-        total_amount: record.total_amount,
+        total_amount: effectiveAmount, // 👈 overridden here
         billable_status: record.billable_status,
         month: record.month,
         year: record.year,
-        description: record.description || null
+        description: record.description || null,
       };
     });
 
-    // 🔹 Respond with summary
+    // ✅ Final Response
     res.json({
       project_id,
       project_name: project.name,
       total_records: breakdown.length,
-      total_resources: new Set(results.map(r => r.billing_records.resource_id.toString())).size,
+      total_resources: new Set(
+        results.map((r) => r.latestRecord.resource_id.toString())
+      ).size,
       total_hours,
       total_cost,
-      breakdown
+      breakdown,
     });
-
   } catch (err) {
     console.error('Error in /invoices/calculate:', err);
     res.status(500).json({ message: err.message });
   }
 });
+
+
+
+
 
 // 🧮 Utility: current month/year
 const getCurrentMonthYear = () => {
@@ -157,11 +183,13 @@ const getCurrentMonthYear = () => {
 // ==========================================================
 // 2️⃣ RESOURCE ALLOCATION STATS
 // ==========================================================
+
+
 router.post('/resource-allocation', async (req, res) => {
   try {
     const { month } = req.body || {};
 
-    // Parse month like "January 2025"
+    // 🔹 Parse month input ("October 2025" or numeric)
     let parsedMonth = null;
     let parsedYear = null;
 
@@ -170,7 +198,7 @@ router.post('/resource-allocation', async (req, res) => {
       if (match) {
         const monthNames = [
           'january', 'february', 'march', 'april', 'may', 'june',
-          'july', 'august', 'september', 'october', 'november', 'december'
+          'july', 'august', 'september', 'october', 'november', 'december',
         ];
         parsedMonth = monthNames.indexOf(match[1].toLowerCase()) + 1; // 1–12
         parsedYear = parseInt(match[2], 10);
@@ -179,31 +207,69 @@ router.post('/resource-allocation', async (req, res) => {
       }
     }
 
-    // Fetch all resources
-    const resources = await Resource.find()
-      .populate('assigned_projects', 'name')
-      .populate('assigned_subprojects', 'name');
+    if (!parsedMonth || !parsedYear) {
+      return res
+        .status(400)
+        .json({ message: 'Please provide a valid month like "October 2025".' });
+    }
 
-    const total_resources = resources.length;
-    const allocated_resources = resources.filter(
-      (r) => r.assigned_projects.length > 0 || r.assigned_subprojects.length > 0
-    ).length;
-    const available_resources = total_resources - allocated_resources;
+    // 🔹 Aggregate from invoices for that month/year
+    const allocationData = await Invoice.aggregate([
+      { $unwind: '$billing_records' },
+      {
+        $match: {
+          'billing_records.month': parsedMonth,
+          'billing_records.year': parsedYear,
+        },
+      },
+      {
+        $group: {
+          _id: '$billing_records.resource_id',
+          total_hours: { $sum: '$billing_records.hours' },
+          total_cost: { $sum: '$billing_records.total_amount' },
+          projects: { $addToSet: '$billing_records.project_name' },
+          subprojects: { $addToSet: '$billing_records.subproject_name' },
+          billable_statuses: { $addToSet: '$billing_records.billable_status' },
+        },
+      },
+      {
+        $lookup: {
+          from: 'resources',
+          localField: '_id',
+          foreignField: '_id',
+          as: 'resource',
+        },
+      },
+      {
+        $addFields: {
+          resource: { $arrayElemAt: ['$resource', 0] },
+        },
+      },
+    ]);
 
-    const allocation_percentage =
-      total_resources > 0 ? (allocated_resources / total_resources) * 100 : 0;
+    // 🔹 Fetch total resources to calculate allocation ratio
+    const totalResources = await Resource.countDocuments();
 
-    // Build detailed breakdown
-    const resource_breakdown = resources.map((r) => ({
+    const allocatedResources = allocationData.length;
+    const availableResources = totalResources - allocatedResources;
+
+    const allocationPercentage =
+      totalResources > 0 ? (allocatedResources / totalResources) * 100 : 0;
+
+    // 🔹 Build detailed breakdown
+    const resource_breakdown = allocationData.map((r) => ({
       resource_id: r._id,
-      name: r.name,
-      role: r.role,
-      assigned_projects: r.assigned_projects.map((p) => p.name),
-      assigned_subprojects: r.assigned_subprojects.map((sp) => sp.name),
+      name: r.resource?.name || 'Unknown Resource',
+      role: r.resource?.role || null,
+      total_hours: r.total_hours || 0,
+      total_cost: r.total_cost || 0,
+      assigned_projects: r.projects.filter(Boolean),
+      assigned_subprojects: r.subprojects.filter(Boolean),
+      billable_statuses: r.billable_statuses,
       utilization:
-        r.assigned_projects.length > 2
+        r.total_hours > 160
           ? 'High'
-          : r.assigned_projects.length > 0
+          : r.total_hours > 80
           ? 'Medium'
           : 'Low',
     }));
@@ -211,17 +277,18 @@ router.post('/resource-allocation', async (req, res) => {
     res.json({
       month: parsedMonth,
       year: parsedYear,
-      total_resources,
-      available_resources,
-      allocated_resources,
-      allocation_percentage,
+      total_resources: totalResources,
+      allocated_resources: allocatedResources,
+      available_resources: availableResources,
+      allocation_percentage: allocationPercentage,
       resource_breakdown,
     });
   } catch (err) {
-    console.error('Error in resource allocation:', err);
+    console.error('Error in /resource-allocation:', err);
     res.status(500).json({ message: err.message });
   }
 });
+
 
 
 // ==========================================================
@@ -232,43 +299,59 @@ router.post('/monthly-analysis', async (req, res) => {
   try {
     const { month } = req.body || {};
 
-    // --- Parse "January 2025" or numeric month/year ---
-    let parsedMonth = null;
-    let parsedYear = null;
+    if (!month) return res.status(400).json({ message: 'Month is required.' });
 
-    if (month) {
-      const match = month.match(/^([A-Za-z]+)\s+(\d{4})$/);
-      if (match) {
-        const monthNames = [
-          'january', 'february', 'march', 'april', 'may', 'june',
-          'july', 'august', 'september', 'october', 'november', 'december'
-        ];
-        parsedMonth = monthNames.indexOf(match[1].toLowerCase()) + 1; // 1–12
-        parsedYear = parseInt(match[2], 10);
-      } else if (!isNaN(month)) {
-        parsedMonth = Number(month);
+    const match = month.match(/^([A-Za-z]+)\s+(\d{4})$/);
+    if (!match) return res.status(400).json({ message: 'Invalid month format.' });
+
+    const monthNames = [
+      'january', 'february', 'march', 'april', 'may', 'june',
+      'july', 'august', 'september', 'october', 'november', 'december'
+    ];
+    const parsedMonth = monthNames.indexOf(match[1].toLowerCase()) + 1;
+    const parsedYear = parseInt(match[2], 10);
+
+    if (!parsedMonth || !parsedYear) {
+      return res.status(400).json({ message: 'Invalid month or year.' });
+    }
+
+    // ✅ Step 1: Fetch all invoices that include data for that month
+    const invoices = await Invoice.find({
+      'billing_records.month': parsedMonth,
+      'billing_records.year': parsedYear
+    }).sort({ createdAt: -1 }).lean();
+
+    if (!invoices.length) {
+      return res.json({
+        month,
+        year: parsedYear,
+        total_budget: 0,
+        billable_amount: 0,
+        non_billable_amount: 0,
+        project_breakdown: [],
+      });
+    }
+
+    // ✅ Step 2: Keep only the latest record per (project, subproject, resource)
+    const seenKeys = new Set();
+    const latestRecords = [];
+
+    for (const invoice of invoices) {
+      for (const record of invoice.billing_records) {
+        if (record.month === parsedMonth && record.year === parsedYear) {
+          const key = `${record.project_id}-${record.subproject_id}-${record.resource_id}`;
+          if (!seenKeys.has(key)) {
+            seenKeys.add(key);
+            latestRecords.push(record);
+          }
+        }
       }
     }
 
-    if (!parsedMonth || !parsedYear) {
-      return res.status(400).json({ message: 'Invalid or missing month/year.' });
-    }
-
-    // ✅ Step 1: Fetch only the *latest* invoice per project
-    const latestInvoices = await Invoice.aggregate([
-      { $sort: { createdAt: -1 } },
-      {
-        $group: {
-          _id: '$project_id',
-          latestInvoice: { $first: '$$ROOT' },
-        },
-      },
-    ]);
-
-    if (!latestInvoices.length) {
+    if (!latestRecords.length) {
       return res.json({
         month,
-        parsedYear,
+        year: parsedYear,
         total_budget: 0,
         billable_amount: 0,
         non_billable_amount: 0,
@@ -276,45 +359,21 @@ router.post('/monthly-analysis', async (req, res) => {
       });
     }
 
-    // ✅ Step 2: Extract billing_records for the given month/year only
-    const billingRecords = latestInvoices.flatMap(group =>
-      group.latestInvoice.billing_records.filter(
-        r => r.month === parsedMonth && r.year === parsedYear
-      )
-    );
-
-    if (!billingRecords.length) {
-      return res.json({
-        month,
-        parsedYear,
-        total_budget: 0,
-        billable_amount: 0,
-        non_billable_amount: 0,
-        project_breakdown: [],
-      });
-    }
-
-    // ✅ Step 3: Aggregate project-wise totals
+    // ✅ Step 3: Aggregate totals by project
     let total_budget = 0;
     let billable_amount = 0;
     let non_billable_amount = 0;
     const project_breakdown = {};
 
-    for (const record of billingRecords) {
-      const amount = record.total_amount || 0;
-      total_budget += amount;
-
-      if (record.billable_status === 'Billable') {
-        billable_amount += record.amount;
-      } else {
-        non_billable_amount += record.costing_amount;
-      }
-
+    for (const record of latestRecords) {
       const projectId = record.project_id?.toString();
       if (!projectId) continue;
 
+      const amount = record.total_amount || 0;
+      const costing = record.costing || 0;
+
       if (!project_breakdown[projectId]) {
-        const project = await Project.findById(projectId);
+        const project = await Project.findById(projectId).lean();
         project_breakdown[projectId] = {
           project_id: projectId,
           project_name: project?.name || 'Unknown Project',
@@ -325,20 +384,24 @@ router.post('/monthly-analysis', async (req, res) => {
         };
       }
 
-      project_breakdown[projectId].total_cost += amount;
+      project_breakdown[projectId].total_cost += costing;
       project_breakdown[projectId].resource_count++;
 
       if (record.billable_status === 'Billable') {
-        project_breakdown[projectId].billable_cost += record.total_amount;
+        project_breakdown[projectId].billable_cost += amount;
+        billable_amount += amount;
       } else {
-        project_breakdown[projectId].non_billable_cost += amount;
+        project_breakdown[projectId].non_billable_cost += costing;
+        non_billable_amount += costing;
       }
+
+      total_budget += amount;
     }
 
-    // ✅ Step 4: Send final structured response
+    // ✅ Step 4: Return results
     res.json({
       month,
-      parsedYear,
+      year: parsedYear,
       total_budget,
       billable_amount,
       non_billable_amount,
@@ -346,7 +409,7 @@ router.post('/monthly-analysis', async (req, res) => {
     });
 
   } catch (err) {
-    console.error('Error in monthly analysis:', err);
+    console.error('Error in monthly-analysis:', err);
     res.status(500).json({ message: err.message });
   }
 });

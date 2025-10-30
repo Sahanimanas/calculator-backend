@@ -17,60 +17,61 @@ router.get('/', async (req, res) => {
     const billableResourceIds = await Invoice.aggregate([
       { $unwind: '$billing_records' },
       { $match: { 'billing_records.billable_status': 'Billable' } },
-      {
-        $group: {
-          _id: '$billing_records.resource_id',
-        },
-      },
+      { $group: { _id: '$billing_records.resource_id' } },
     ]);
     const billableResources = billableResourceIds.length;
 
-    // --- 4️⃣ Current Month Totals (only latest invoice per project) ---
+    // --- 4️⃣ Current Month Totals (latest data per combination) ---
     const now = new Date();
     const currentMonth = now.getMonth() + 1;
     const currentYear = now.getFullYear();
 
-    const latestInvoices = await Invoice.aggregate([
-      // Sort all invoices by createdAt DESC
-      { $sort: { createdAt: -1 } },
+    const latestMonthlyRecords = await Invoice.aggregate([
+      // Unwind all billing records
+      { $unwind: '$billing_records' },
 
-      // Group by project to keep only the latest invoice for each project
-      {
-        $group: {
-          _id: '$project_id',
-          latestInvoice: { $first: '$$ROOT' },
-        },
-      },
-
-      // Unwind billing_records of the latest invoices
-      { $unwind: '$latestInvoice.billing_records' },
-
-      // Match only current month + year billing records
+      // Match billing records that belong to current month & year
       {
         $match: {
-          'latestInvoice.billing_records.month': currentMonth,
-          'latestInvoice.billing_records.year': currentYear,
+          'billing_records.month': currentMonth,
+          'billing_records.year': currentYear,
         },
       },
 
-      // Group to get total billing & costing from latest invoices only
+      // Sort invoices so the latest createdAt appears first
+      { $sort: { createdAt: -1 } },
+
+      // Group by unique combo (project, subproject, resource)
+      // and keep only the latest record for that combo
+      {
+        $group: {
+          _id: {
+            project_id: '$billing_records.project_id',
+            subproject_id: '$billing_records.subproject_id',
+            resource_id: '$billing_records.resource_id',
+          },
+          latestRecord: { $first: '$billing_records' },
+        },
+      },
+
+      // Calculate totals
       {
         $group: {
           _id: null,
-          totalBillingAmount: {
-            $sum: '$latestInvoice.billing_records.total_amount',
-          },
-          totalCostingAmount: {
-            $sum: '$latestInvoice.billing_records.costing',
-          },
+          totalBillingAmount: { $sum: '$latestRecord.total_amount' },
+          totalCostingAmount: { $sum: '$latestRecord.costing' },
         },
       },
     ]);
 
     const currentMonthBilling =
-      latestInvoices.length > 0 ? latestInvoices[0].totalBillingAmount : 0;
+      latestMonthlyRecords.length > 0
+        ? latestMonthlyRecords[0].totalBillingAmount
+        : 0;
     const currentMonthCosting =
-      latestInvoices.length > 0 ? latestInvoices[0].totalCostingAmount : 0;
+      latestMonthlyRecords.length > 0
+        ? latestMonthlyRecords[0].totalCostingAmount
+        : 0;
 
     // --- ✅ Final Response ---
     res.json({
