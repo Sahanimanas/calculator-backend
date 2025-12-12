@@ -1,0 +1,69 @@
+scalar Date
+
+type ResourceRef {
+  id: ID!
+  name: String!
+  avatar_url: String
+  role: String
+}
+
+type CostingRow {
+  uniqueId: String!
+  projectId: ID
+  projectName: String
+  subprojectId: ID
+  subProjectName: String
+
+  resource: ResourceRef!
+
+  hours: Float
+  productivity: String
+  rate: Float
+  flatrate: Float
+
+  costingAmount: Float
+  totalBillAmount: Float
+
+  isBillable: Boolean
+  description: String
+
+  billingId: ID
+  isEditable: Boolean
+}
+
+type Query {
+  costing(month: Int!, year: Int!): [CostingRow!]!
+  projects: [Project!]!
+  resources: [ResourceRef!]!
+}
+
+input BillingSyncInput {
+  billingId: ID
+  projectId: ID
+  subprojectId: ID
+  resourceId: ID
+  hours: Float
+  productivity: String
+  rate: Float
+  flatrate: Float
+  description: String
+  billableStatus: String
+  month: Int
+  year: Int
+}
+
+type BillingSyncResult {
+  billingId: ID
+  uniqueId: String
+}
+
+type InvoiceResult {
+  invoiceNumber: String!
+  invoiceId: ID!
+}
+
+type Mutation {
+  billingSyncBulk(records: [BillingSyncInput!]!): [BillingSyncResult!]!
+  updateBilling(billingId: ID!, hours: Float!, productivity: String): BillingSyncResult!
+  createInvoice(month: Int!, year: Int!): InvoiceResult!
+}

@@ -21,6 +21,8 @@ mongoose.connect(process.env.MONGODB_URI)
 // Routes
 app.use('/api/auth', require('./routes/auth.route'));
 app.use('/api/project', require('./routes/project.route'));
+
+app.use('/api/upload-resource',require('./routes/resources-bulk-upload.route'))
 app.use('/api/productivity', require('./routes/productivity.route'));
 app.use('/api/level', require('./routes/subproject-level'));
 app.use('/api/resource', require('./routes/Resource.route'));
