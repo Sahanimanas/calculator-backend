@@ -14,9 +14,13 @@ app.use(bodyParser.json());
 app.use(cors({ origin: '*' }));
 
 // MongoDB connection
-mongoose.connect(process.env.MONGODB_URI)
+mongoose.set('strictQuery', false);   // or true, both silence the warning
+
+mongoose
+  .connect(process.env.MONGODB_URI)
   .then(() => console.log('MongoDB connected'))
-  .catch(err => console.log(err));  
+  .catch(err => console.log(err));
+
 
 // Routes
 app.use('/api/auth', require('./routes/auth.route'));
