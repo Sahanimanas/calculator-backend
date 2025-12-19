@@ -16,12 +16,23 @@ app.use(cors({ origin: '*' }));
 // MongoDB connection
 mongoose.set('strictQuery', false);   // or true, both silence the warning
 
-mongoose
-  .connect(process.env.MONGODB_URI)
-  .then(() => console.log('MongoDB connected'))
-  .catch(err => console.log(err));
+// const uri = "mongodb+srv://brain:Xeno%402025@myapp.global.mongocluster.cosmos.azure.com/?tls=true&authMechanism=SCRAM-SHA-256&retrywrites=false&maxIdleTimeMS=120000";
 
+ async function connectDB() {
+    try {
+        await mongoose.connect(process.env.MONGODB_URI, {
+            // These options ensure stability with Cosmos DB
+            useNewUrlParser: true,
+            useUnifiedTopology: true,
+            retryWrites: false, 
+        });
+        console.log("Successfully connected to MongoDB");
+    } catch (error) {
+        console.error("Connection error:", error);
+    }
+}
 
+connectDB()
 // Routes
 app.use('/api/auth', require('./routes/auth.route'));
 app.use('/api/project', require('./routes/project.route'));

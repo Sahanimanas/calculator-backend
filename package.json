@@ -2,6 +2,7 @@
   "name": "hardcoded-login-api",
   "version": "1.0.0",
   "main": "server.js",
+  "type":"commonjs",
   "scripts": {
     "dev": "node server.js",
     "start": "nodemon server.js"

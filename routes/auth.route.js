@@ -6,12 +6,6 @@ const User = require('../models/User');
 const JWT_SECRET = process.env.JWT_SECRET; // use env var in production
 
 // Hardcoded user credentials
-const HARD_CODED_USER = {
-  email: 'admin@gmail.com',
-  password: 'admin123', // in real apps, never store plain passwords
-  full_name: 'Admin User',
-  role: 'admin'
-};
 
 // ================= Login =================
 router.post('/login', async(req, res) => {
@@ -22,6 +16,7 @@ router.post('/login', async(req, res) => {
   }
 
   const user= await User.findOne({ email: email, password_hash: password });
+  console.log(user);
 
   // Check if input matches hardcoded credentials
   if (!user) {return res.status(401).json({ message: 'Invalid credentials' });}
@@ -35,9 +30,8 @@ router.post('/login', async(req, res) => {
     return res.json({
       token,
       user: {
-        full_name: HARD_CODED_USER.full_name,
-        email: HARD_CODED_USER.email,
-        role: HARD_CODED_USER.role
+        id: user._id,
+        email: user.email
       }
     });
   
