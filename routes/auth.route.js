@@ -4,7 +4,7 @@ const jwt = require('jsonwebtoken');
 const mongoose = require('mongoose');
 const User = require('../models/User');
 const JWT_SECRET = process.env.JWT_SECRET; // use env var in production
-
+const bcrypt = require('bcryptjs');
 // Hardcoded user credentials
 
 // ================= Login =================
@@ -15,11 +15,15 @@ router.post('/login', async(req, res) => {
     return res.status(400).json({ message: 'Email and password required' });
   }
 
-  const user= await User.findOne({ email: email, password_hash: password });
-  console.log(user);
+  const user= await User.findOne({ email: email });
+  if (!user) {
+    return res.status(401).json({ message: 'Invalid email or password' });
+  }
 
-  // Check if input matches hardcoded credentials
-  if (!user) {return res.status(401).json({ message: 'Invalid credentials' });}
+  const isPasswordValid = await bcrypt.compare(password, user.password_hash);
+  if (!isPasswordValid) {
+    return res.status(401).json({ message: 'Invalid email or password' });
+  }
 
     const token = jwt.sign(
       { id: user._id, email: user.email, role: user.role },
@@ -37,16 +41,20 @@ router.post('/login', async(req, res) => {
   
 });
 
-router.post('/register', (req, res) => {
+router.post('/register', async (req, res) => {
   const { email, password, full_name, role } = req.body;
 
   if (!email || !password ) {
     return res.status(400).json({ message: 'All fields are required' });
   }
-
+const existingUser = await User.findOne({ email: email });
+  if (existingUser) {
+    return res.status(409).json({ message: 'Email already in use' });
+  } 
+  const password_hash = await bcrypt.hash(password, 10);
   const user = new User({
     email,
-    password_hash: password, // In real apps, hash the password
+    password_hash: password_hash, // In real apps, hash the password
 
   });
 
