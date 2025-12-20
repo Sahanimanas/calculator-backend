@@ -24,11 +24,44 @@ router.get('/', async (req, res) => {
 // GET /project-subprojects
 router.get('/project-subproject', async (req, res) => {
   try {
-    // Fetch all projects
-    const projects = await Project.find().lean();
+    // Extract pagination params from query
+    const page = parseInt(req.query.page) || 1;
+    let limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
 
-    // Fetch all subprojects (some may not have valid project references)
-    const subprojects = await SubProject.find().populate('project_id', 'name').lean();
+    // Get total count of projects
+    const totalProjects = await Project.countDocuments();
+
+    // Fetch paginated projects
+    if (totalProjects === 0) {
+      return res.json({
+        data: [],
+        pagination: {
+          currentPage: page,
+          totalPages: 0,
+          totalItems: 0,
+          itemsPerPage: limit,
+          hasNextPage: false,
+          hasPrevPage: false
+        }
+      });
+    } 
+
+    if(!req.query.page && !req.query.limit ){
+      limit = totalProjects;
+    }
+    const projects = await Project.find()
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    // Get project IDs for the current page
+    const projectIds = projects.map(p => p._id);
+
+    // Fetch only subprojects that belong to current page projects
+    const subprojects = await SubProject.find({ 
+      project_id: { $in: projectIds } 
+    }).populate('project_id', 'name').lean();
 
     // Group subprojects under their parent project
     const result = projects.map(project => ({
@@ -37,6 +70,7 @@ router.get('/project-subproject', async (req, res) => {
       flatrate: project.flatrate || 0,
       description: project.description,
       visibility: project.visibility,
+      status: project.status,
       created_on: project.created_on,
       updated_at: project.updated_at,
       subprojects: subprojects
@@ -52,7 +86,18 @@ router.get('/project-subproject', async (req, res) => {
         }))
     }));
 
-    res.json(result);
+    // Send paginated response
+    res.json({
+      data: result,
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(totalProjects / limit),
+        totalItems: totalProjects,
+        itemsPerPage: limit,
+        hasNextPage: page < Math.ceil(totalProjects / limit),
+        hasPrevPage: page > 1
+      }
+    });
   } catch (err) {
     console.error('Error fetching project-subproject data:', err);
     res.status(500).json({ message: err.message });

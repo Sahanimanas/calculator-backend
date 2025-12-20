@@ -16,6 +16,9 @@ router.get('/',   async (req, res) => {
     if (level) filters.level = level;
     // console.log('Filters:', filters);
     const tiers = await Productivity.find(filters).sort({ created_at: -1 });
+    if(!tiers.length) {
+      return  res.json([]);
+    }
     res.json(tiers);
   } catch (err) {
     console.error(err);
