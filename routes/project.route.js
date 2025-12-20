@@ -4,7 +4,6 @@ const Project = require('../models/Project');
 const SubProject = require('../models/Subproject.js');
 const AuditLog = require('../models/AuditLog');
 const { mongo, default: mongoose } = require('mongoose');
-// const {   getManagerUser } = require('../middleware/auth');
 
 // ================= GET all projects =================
 router.get('/', async (req, res) => {
@@ -21,7 +20,102 @@ router.get('/', async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 });
-// GET /project-subprojects
+
+// ================= GET /projects-with-totals - MUST BE BEFORE /:id =================
+router.get('/projects-with-totals', async (req, res) => {
+  try {
+    // Extract pagination params from query
+    const page = parseInt(req.query.page) || 1;
+    let limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    // Get total count of projects
+    const totalProjects = await Project.countDocuments();
+
+    // Handle empty projects case
+    if (totalProjects === 0) {
+      return res.json([]);
+    }
+
+    // If no pagination params, fetch all projects
+    if (!req.query.page && !req.query.limit) {
+      limit = totalProjects;
+    }
+
+    // Fetch paginated projects
+    const projects = await Project.find()
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    // Get project IDs for the current page
+    const projectIds = projects.map(p => p._id);
+
+    // Aggregate to get total flatrate sum for each project
+    const subprojectTotals = await SubProject.aggregate([
+      {
+        $match: { project_id: { $in: projectIds } }
+      },
+      {
+        $group: {
+          _id: '$project_id',
+          totalFlatrate: { $sum: '$flatrate' },
+          subprojectCount: { $sum: 1 }
+        }
+      }
+    ]);
+
+    // Create a map for quick lookup
+    const totalsMap = {};
+    subprojectTotals.forEach(item => {
+      totalsMap[item._id.toString()] = {
+        totalFlatrate: item.totalFlatrate,
+        subprojectCount: item.subprojectCount
+      };
+    });
+
+    // Combine projects with their totals
+    const result = projects.map(project => ({
+      _id: project._id,
+      name: project.name,
+      flatrate: project.flatrate || 0,
+      description: project.description,
+      visibility: project.visibility,
+      status: project.status,
+      created_on: project.created_on,
+      updated_at: project.updated_at,
+      totalFlatrate: totalsMap[project._id.toString()]?.totalFlatrate || 0,
+      subprojectCount: totalsMap[project._id.toString()]?.subprojectCount || 0
+    }));
+
+    // Set pagination headers
+    // res.set({
+    //   'X-Total-Count': totalProjects,
+    //   'X-Current-Page': page,
+    //   'X-Total-Pages': Math.ceil(totalProjects / limit),
+    //   'X-Items-Per-Page': limit,
+    //   'X-Has-Next-Page': page < Math.ceil(totalProjects / limit),
+    //   'X-Has-Prev-Page': page > 1
+    // });
+
+    res.json({
+      projects: result,
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(totalProjects / limit),
+        totalItems: totalProjects,
+        itemsPerPage: limit,
+        hasNextPage: page < Math.ceil(totalProjects / limit),
+        hasPrevPage: page > 1
+      }
+    });
+  } catch (err) {
+    console.error('Error fetching projects with totals:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ================= GET /project-subproject =================
 router.get('/project-subproject', async (req, res) => {
   try {
     // Extract pagination params from query
@@ -104,6 +198,22 @@ router.get('/project-subproject', async (req, res) => {
   }
 });
 
+// ================= GET all sub-projects =================
+router.get('/sub-project', async (req, res) => {
+  try {
+    const { project_id, status } = req.query;
+    const filters = {};
+    if (project_id) filters.project_id = project_id;
+    if (status) filters.status = status;
+
+    const subProjects = await SubProject.find(filters).sort({ created_on: -1 });
+    res.json(subProjects);
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: err.message });
+  }
+});
 
 // ================= CREATE project =================
 router.post('/', async (req, res) => {
@@ -150,110 +260,6 @@ router.post('/', async (req, res) => {
   } catch (err) {
     console.error('Error creating project:', err);
     res.status(500).json({ message: 'Internal Server Error' });
-  }
-});
-// ================= UPDATE project =================
-router.put('/:id', async (req, res) => {
-  try {
-    const project = await Project.findById(req.params.id);
-    if (!project) return res.status(404).json({ message: 'Project not found' });
-
-    const { name, description, visibility, projectPrice } = req.body;
-    if (!name) {
-      return res.status(400).json({ message: 'Project name is required' });
-    }
-    if (visibility == true) {
-      visibility = 'visible';
-    }
-    if (visibility == false) {
-      visibility = 'hidden';
-    }
-    // Update fields directly
-    project.name = name ?? project.name;
-    project.description = description ?? project.description;
-    project.visibility = visibility ?? project.visibility;
-    project.flatrate = projectPrice || project.flatrate;
-
-
-    // Save updated document
-    await project.save();
-
-    // await AuditLog.create({
-    //   user_id: req.user._id,
-    //   action: 'UPDATE',
-    //   entity_type: 'Project',
-    //   entity_id: project._id,
-    //   description: `User ${req.user.email} updated project ${project.name}`,
-    //   details: req.body
-    // });
-
-    res.json(project);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: err.message });
-  }
-});
-
-// ================= DELETE sub-project =================
-router.delete('/subproject/:id', async (req, res) => {
-  try {
-    const subProject = await SubProject.findById(req.params.id);
-    if (!subProject) return res.status(404).json({ message: 'Sub-project not found' });
-
-    // await AuditLog.create({
-    //   user_id: req.user._id,
-    //   action: 'DELETE',
-    //   entity_type: 'SubProject',
-    //   entity_id: subProject._id,
-    //   description: `User ${req.user.email} deleted sub-project ${subProject.name}`,
-    //   details: { deleted_sub_project_name: subProject.name }
-    // });
-
-    await subProject.deleteOne();
-    res.status(200).json({ message: 'Sub-project deleted successfully', success: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: err.message });
-  }
-});
-// ================= DELETE project =================
-router.delete('/:id', async (req, res) => {
-  try {
-    const project = await Project.findById(req.params.id);
-    if (!project) return res.status(404).json({ message: 'Project not found' });
-
-    // await AuditLog.create({
-    //   user_id: req.user._id,
-    //   action: 'DELETE',
-    //   entity_type: 'Project',
-    //   entity_id: project._id,
-    //   description: `User ${req.user.email} deleted project ${project.name}`,
-    //   details: { deleted_project_name: project.name }
-    // });
-
-    await project.deleteOne(); // cascade should handle sub-projects if configured
-    res.status(200).json({ message: 'Project deleted successfully', success: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: err.message });
-  }
-});
-
-// ================= GET all sub-projects =================
-router.get('/sub-project', async (req, res) => {
-  try {
-    const { project_id, status } = req.query;
-    // console.log(req.query)
-    const filters = {};
-    if (project_id) filters.project_id = project_id;
-    if (status) filters.status = status;
-
-    const subProjects = await SubProject.find(filters).sort({ created_on: -1 });
-    res.json(subProjects);
-
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: err.message });
   }
 });
 
@@ -304,6 +310,39 @@ router.post('/sub-project', async (req, res) => {
     res.status(500).json({ message: 'Internal Server Error' });
   }
 });
+
+// ================= UPDATE project =================
+router.put('/:id', async (req, res) => {
+  try {
+    const project = await Project.findById(req.params.id);
+    if (!project) return res.status(404).json({ message: 'Project not found' });
+
+    let { name, description, visibility, projectPrice } = req.body;
+    if (!name) {
+      return res.status(400).json({ message: 'Project name is required' });
+    }
+    if (visibility == true) {
+      visibility = 'visible';
+    }
+    if (visibility == false) {
+      visibility = 'hidden';
+    }
+    // Update fields directly
+    project.name = name ?? project.name;
+    project.description = description ?? project.description;
+    project.visibility = visibility ?? project.visibility;
+    project.flatrate = projectPrice || project.flatrate;
+
+    // Save updated document
+    await project.save();
+
+    res.json(project);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
 // ================= UPDATE sub-project =================
 router.put('/subproject/:id', async (req, res) => {
   try {
@@ -322,19 +361,10 @@ router.put('/subproject/:id', async (req, res) => {
     subProject.description = description ?? subProject.description;
 
     if (subProjectPrice !== undefined)
-      subProject.flatrate = Number(subProjectPrice); // ensure numeric
+      subProject.flatrate = Number(subProjectPrice);
+      
     // Save updated document
     await subProject.save();
-
-    // Optional: log audit
-    // await AuditLog.create({
-    //   user_id: req.user._id,
-    //   action: 'UPDATE',
-    //   entity_type: 'SubProject',
-    //   entity_id: subProject._id,
-    //   description: `User ${req.user.email} updated sub-project ${subProject.name}`,
-    //   details: req.body
-    // });
 
     res.json(subProject);
   } catch (err) {
@@ -343,7 +373,35 @@ router.put('/subproject/:id', async (req, res) => {
   }
 });
 
-// ================= GET sub-projects for a project =================
+// ================= DELETE sub-project =================
+router.delete('/subproject/:id', async (req, res) => {
+  try {
+    const subProject = await SubProject.findById(req.params.id);
+    if (!subProject) return res.status(404).json({ message: 'Sub-project not found' });
+
+    await subProject.deleteOne();
+    res.status(200).json({ message: 'Sub-project deleted successfully', success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ================= DELETE project =================
+router.delete('/:id', async (req, res) => {
+  try {
+    const project = await Project.findById(req.params.id);
+    if (!project) return res.status(404).json({ message: 'Project not found' });
+
+    await project.deleteOne();
+    res.status(200).json({ message: 'Project deleted successfully', success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ================= GET sub-projects for a project - MUST BE BEFORE /:id =================
 router.get('/:project_id/subproject', async (req, res) => {
   try {
     const project = await Project.findById(req.params.project_id);
@@ -356,7 +414,8 @@ router.get('/:project_id/subproject', async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 });
-// ================= GET single project =================
+
+// ================= GET single project - MUST BE LAST =================
 router.get('/:id', async (req, res) => {
   try {
     const project = await Project.findById(req.params.id);
@@ -367,9 +426,5 @@ router.get('/:id', async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 });
-
-
-
-
 
 module.exports = router;
