@@ -508,90 +508,97 @@ router.patch('/bulk-update', async (req, res) => {
     for (const update of updates) {
       try {
         const { billingId, isMonthlyRecord, ...fields } = update;
+
+        let billingDoc;
+
+        // 1. Fetch Existing Record (if ID provided)
+        if (billingId && billingId !== 'undefined') {
+           billingDoc = await Billing.findById(billingId);
+        }
+
+        // 2. If it's a new record creation (no ID)
+        if (!billingDoc) {
+           // ... (Creation logic logic remains similar to before, simplified here)
+           const projectId = fields.projectId || fields.project_id;
+           const resourceId = fields._id || fields.resource_id;
+           
+           if (!projectId || !resourceId) throw new Error('Missing IDs for creation');
+           
+           // Fetch names for denormalization
+           const [project, resource, subproject] = await Promise.all([
+               Project.findById(projectId),
+               Resource.findById(resourceId),
+               fields.subprojectId ? Subproject.findById(fields.subprojectId) : null
+           ]);
+
+           billingDoc = new Billing({
+               project_id: projectId,
+               resource_id: resourceId,
+               subproject_id: fields.subprojectId || fields.subproject_id,
+               project_name: project?.name,
+               resource_name: resource?.name,
+               subproject_name: subproject?.name || '',
+               month: fields.month,
+               year: fields.year,
+               // Initialize with 0
+               hours: 0, 
+               rate: 0, 
+               flatrate: 0
+           });
+        }
+
+        // 3. STRICT UPDATE LOGIC
+        // We check 'undefined' specifically to allow 0 to be a valid value
+        if (fields.hours !== undefined && fields.hours !== '') {
+            billingDoc.hours = Number(fields.hours);
+        }
         
-        // Prepare numeric fields for calculation
-        const hours = Number(fields.hours) || 0;
-        const rate = Number(fields.rate) || 0;
-        const flatrate = Number(fields.flatrate) || 0;
+        if (fields.rate !== undefined && fields.rate !== '') {
+            billingDoc.rate = Number(fields.rate);
+        }
         
-        // Map frontend booleans to Schema strings if necessary
-        // Assuming frontend sends "isBillable": true/false -> Schema "Billable"/"Non-Billable"
-        let billableStatus = fields.billable_status;
+        if (fields.flatrate !== undefined && fields.flatrate !== '') {
+            billingDoc.flatrate = Number(fields.flatrate);
+        }
+
+        if (fields.productivity_level || fields.productivity) {
+            billingDoc.productivity_level = fields.productivity_level || fields.productivity;
+        }
+
         if (fields.isBillable !== undefined) {
-             billableStatus = fields.isBillable ? 'Billable' : 'Non-Billable';
+             billingDoc.billable_status = fields.isBillable ? 'Billable' : 'Non-Billable';
+        } else if (fields.billable_status) {
+             billingDoc.billable_status = fields.billable_status;
         }
 
-        // Map productivity if coming from frontend as 'productivity'
-        const productivityLevel = fields.productivity_level || fields.productivity;
-
-        // Base payload
-        const payload = {
-          hours,
-          rate,
-          flatrate,
-          productivity_level: productivityLevel,
-          billable_status: billableStatus,
-          description: fields.description,
-          costing: hours * rate,
-          total_amount: hours * flatrate,
-          // Ensure month/year are updated if passed
-          month: fields.month,
-          year: fields.year
-        };
-
-        let result;
-        
-        // UPDATE existing monthly record
-        if (billingId && isMonthlyRecord && billingId !== 'undefined') {
-          result = await Billing.findByIdAndUpdate(
-            billingId,
-            { $set: payload },
-            { new: true, runValidators: true }
-          );
-        } 
-        // CREATE new monthly record (if user edited a row that didn't have a DB entry yet)
-        else {
-          // We need to fetch names to populate denormalized fields
-          // Frontend must send IDs: projectId, subprojectId, _id (resourceId)
-          const projectId = fields.projectId || fields.project_id;
-          const subprojectId = fields.subprojectId || fields.subproject_id;
-          const resourceId = fields._id || fields.resource_id;
-
-          if (!projectId || !resourceId) {
-             throw new Error('Missing project_id or resource_id for new record creation');
-          }
-
-          const project = await Project.findById(projectId);
-          const subproject = subprojectId ? await Subproject.findById(subprojectId) : null;
-          const resource = await Resource.findById(resourceId);
-
-          if (!project || !resource) throw new Error('Invalid Project or Resource ID');
-
-          result = await Billing.create({
-            ...payload,
-            project_id: projectId,
-            subproject_id: subprojectId,
-            resource_id: resourceId,
-            project_name: project.name,
-            subproject_name: subproject ? subproject.name : '',
-            resource_name: resource.name,
-            resource_role: resource.role
-          });
+        if (fields.description !== undefined) {
+            billingDoc.description = fields.description;
         }
-        
+
+        // 4. Always Recalculate Totals using the (now updated) document values
+        // This ensures if we update hours to 0, total becomes 0 immediately
+        const safeHours = billingDoc.hours || 0;
+        const safeRate = billingDoc.rate || 0;
+        const safeFlat = billingDoc.flatrate || 0;
+
+        billingDoc.costing = safeHours * safeRate;
+        billingDoc.total_amount = safeHours * safeFlat;
+
+        // 5. Save
+        const result = await billingDoc.save();
         results.push(result);
+
       } catch (error) {
-        errors.push({
-          update,
-          error: error.message
-        });
+        console.error("Single update failed:", error);
+        errors.push({ update, error: error.message });
       }
     }
 
     res.json({
       success: true,
       updated: results.length,
-      errors: errors.length > 0 ? errors : undefined
+      errors: errors.length > 0 ? errors : undefined,
+      results // Send back results so frontend can update IDs if needed
     });
 
   } catch (err) {
@@ -599,7 +606,6 @@ router.patch('/bulk-update', async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 });
-
 // ================= AUTO-GENERATE billing =================
 router.post('/auto-generate', async (req, res) => {
   try {

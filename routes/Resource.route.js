@@ -12,28 +12,88 @@ const SubprojectProductivity = require('../models/SubprojectProductivity');
 // const upload = multer({ dest: 'tmp/csv/' });
 
 // --- GET resources with filters ---
+// ================= GET RESOURCES (PAGINATED & FILTERED) =================
+// ================= GET RESOURCES (Optional Pagination) =================
 router.get('/', async (req, res) => {
   try {
-    const { role, billable_status, project_id, search } = req.query;
+    // Remove defaults from destructuring to check if they exist
+    const { 
+      role, 
+      billable_status, 
+      project_id, 
+      subproject_id, 
+      search,
+      page, 
+      limit 
+    } = req.query;
 
-    let query = Resource.find();
+    const query = {};
 
-    if (role) query = query.where('role').equals(role);
-    if (billable_status) query = query.where('billable_status').equals(billable_status);
-    if (project_id) query = query.where('assigned_projects').in([project_id]);
+    // Build Query
+    if (role) query.role = role;
+    if (billable_status) {
+        query.isBillable = billable_status === 'billable'; 
+    }
+    if (project_id) query.assigned_projects = project_id;
+    if (subproject_id) query.assigned_subprojects = subproject_id;
+    
+    // Search (Case insensitive)
     if (search) {
-      query = query.or([
+      query.$or = [
         { name: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } }
-      ]);
+        { email: { $regex: search, $options: 'i' } },
+        { role: { $regex: search, $options: 'i' } }
+      ];
     }
 
-    const resources = await query
-      .populate('assigned_projects', 'name')
-      .populate('assigned_subprojects', 'name')
-      .sort({ createdAt: -1 });
+    // Base Mongoose Query
+    let resourceQuery = Resource.find(query)
+        .populate('assigned_projects', 'name')
+        .populate('assigned_subprojects', 'name')
+        .sort({ createdAt: -1 })
+        .lean();
 
-    res.json(resources);
+    let resources = [];
+    let paginationData = {};
+
+    // === CONDITIONAL PAGINATION ===
+    // Only paginate if 'page' or 'limit' is explicitly passed in the URL
+    if (page || limit) {
+        const pageNum = parseInt(page) || 1;
+        const limitNum = parseInt(limit) || 20; // Default to 20 only if paginating
+        const skip = (pageNum - 1) * limitNum;
+
+        // Get Data + Count in parallel
+        const [paginatedResources, total] = await Promise.all([
+          resourceQuery.skip(skip).limit(limitNum),
+          Resource.countDocuments(query)
+        ]);
+
+        resources = paginatedResources;
+        paginationData = {
+            total,
+            page: pageNum,
+            totalPages: Math.ceil(total / limitNum),
+            hasMore: pageNum < Math.ceil(total / limitNum)
+        };
+    } else {
+        // === NO PAGINATION: RETURN ALL ===
+        resources = await resourceQuery;
+        
+        paginationData = {
+            total: resources.length,
+            page: 1,
+            totalPages: 1,
+            hasMore: false
+        };
+    }
+
+    // Return consistent structure
+    res.json({
+      data: resources,
+      pagination: paginationData
+    });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: err.message });
