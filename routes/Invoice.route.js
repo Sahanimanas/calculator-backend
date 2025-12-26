@@ -4,82 +4,102 @@ const router = express.Router();
 const Invoice = require('../models/Invoices');
 const Billing = require('../models/Billing');
 
-// --- MIDDLEWARE: Convert billing IDs to full billing objects ---
-const convertBillingIdsToObjects = async (req, res, next) => {
+// --- HELPER: Map DB Billing Doc to Invoice Record Schema ---
+const mapBillingToInvoiceRecord = (bill) => ({
+  project_id: bill.project_id,
+  subproject_id: bill.subproject_id,
+  project_name: bill.project_name,
+  subproject_name: bill.subproject_name,
+  resource_id: bill.resource_id,
+  resource_name: bill.resource_name,
+  productivity_level: bill.productivity_level,
+  hours: bill.hours,
+  rate: bill.rate,
+  flatrate: bill.flatrate || 0,
+  costing: bill.costing,
+  // Only include revenue amount if it's billable
+  total_amount: bill.billable_status === 'Billable' ? bill.total_amount : 0,
+  billable_status: bill.billable_status || 'Non-Billable',
+  description: bill.description,
+  month: bill.month,
+  year: bill.year,
+  original_billing_id: bill._id
+});
+
+// --- MIDDLEWARE: Prepare Billing Data ---
+// Handles both [Array of IDs] AND { Filters } for large datasets
+const prepareInvoiceData = async (req, res, next) => {
   try {
-    const { billing_records } = req.body;
+    let billingDocs = [];
 
-    if (!billing_records || !Array.isArray(billing_records)) {
-      return next();
-    }
+    // SCENARIO 1: Client sent an array of specific Billing IDs
+    if (req.body.billing_records && Array.isArray(req.body.billing_records) && req.body.billing_records.length > 0) {
+      
+      const hasIds = req.body.billing_records.some(record => 
+        typeof record === 'string' || 
+        (typeof record === 'object' && record.constructor.name === 'ObjectId')
+      );
 
-    // Check if billing_records contains IDs (strings) or objects
-    const hasIds = billing_records.some(record => 
-      typeof record === 'string' || 
-      (typeof record === 'object' && record.constructor.name === 'ObjectId')
-    );
+      if (hasIds) {
+        const billingIds = req.body.billing_records.map(id => id.toString ? id.toString() : id);
+        billingDocs = await Billing.find({ _id: { $in: billingIds } });
+      }
+    } 
+    // SCENARIO 2: Client sent Filters (Month, Year, Project) - Essential for pagination
+    else if (req.body.month && req.body.year) {
+      const query = {
+        month: req.body.month,
+        year: req.body.year,
+        hours: { $gt: 0 } // Only invoice records with actual hours
+      };
 
-    if (hasIds) {
-      // Fetch full billing records from database
-      const billingIds = billing_records.map(id => id.toString ? id.toString() : id);
-      const billingDocs = await Billing.find({ _id: { $in: billingIds } });
+      if (req.body.project_id) query.project_id = req.body.project_id;
+      if (req.body.subproject_id) query.subproject_id = req.body.subproject_id;
 
-      if (billingDocs.length !== billingIds.length) {
-        return res.status(400).json({ 
-          message: 'Some billing records not found',
-          found: billingDocs.length,
-          requested: billingIds.length
+      billingDocs = await Billing.find(query);
+      
+      if (billingDocs.length === 0) {
+        return res.status(404).json({ 
+          message: 'No billing records found matching the provided filters.' 
         });
       }
+    }
 
-      // Convert to plain objects with all fields
-      req.body.billing_records = billingDocs.map(bill => ({
-        project_id: bill.project_id,
-        subproject_id: bill.subproject_id,
-        project_name: bill.project_name,
-        subproject_name: bill.subproject_name,
-        resource_id: bill.resource_id,
-        resource_name: bill.resource_name,
-        productivity_level: bill.productivity_level,
-        hours: bill.hours,
-        rate: bill.rate,
-        flatrate: bill.flatrate || 0,
-        costing: bill.costing,
-        total_amount: bill.billable_status==='Billable'?bill.total_amount:0,
-        billable_status: bill.billable_status || 'Non-Billable',
-        description: bill.description,
-        month: bill.month,
-        year: bill.year,
-        original_billing_id: bill._id
-      }));
-
-
+    // If we found docs, format them for the Invoice Model
+    if (billingDocs.length > 0) {
+      req.body.billing_records = billingDocs.map(mapBillingToInvoiceRecord);
     }
 
     next();
   } catch (error) {
-    console.error('Error in convertBillingIdsToObjects middleware:', error);
+    console.error('Error in prepareInvoiceData middleware:', error);
     res.status(500).json({ 
-      message: 'Failed to process billing records', 
+      message: 'Failed to process invoice data', 
       error: error.message 
     });
   }
 };
 
 // --- CREATE INVOICE ---
-router.post('/', convertBillingIdsToObjects, async (req, res) => {
+router.post('/', prepareInvoiceData, async (req, res) => {
   try {
-    const { billing_records } = req.body;
+    const { billing_records, month, year, project_id } = req.body;
 
     if (!billing_records || !billing_records.length) {
       return res.status(400).json({ 
-        message: 'Billing records are required.' 
+        message: 'No billing records available to invoice.' 
       });
     }
 
     // Create invoice with embedded billing data
     const invoice = new Invoice({ 
-      billing_records
+      billing_records,
+      metadata: {
+        generated_via: month && year ? 'filter' : 'selection',
+        month_ref: month,
+        year_ref: year,
+        project_ref: project_id
+      }
     });
     
     await invoice.calculateTotals();
@@ -99,26 +119,10 @@ router.post('/', convertBillingIdsToObjects, async (req, res) => {
 router.get('/', async (req, res) => {
   try {
     const invoices = await Invoice.find()
-      .populate([
-        { path: 'billing_records.project_id', select: 'name' },
-        { path: 'billing_records.subproject_id', select: 'name' },
-        { path: 'billing_records.resource_id', select: 'name' }
-      ])
+      .select('-billing_records') // Optimization: Don't load massive billing arrays for list view
       .sort({ createdAt: -1 });
 
-    // Enhance with populated names
-    const invoicesWithNames = invoices.map(inv => {
-      const invObj = inv.toObject();
-      invObj.billing_records = invObj.billing_records.map(bill => ({
-        ...bill,
-        project_name: bill.project_id?.name || bill.project_name || null,
-        subproject_name: bill.subproject_id?.name || bill.subproject_name || null,
-        resource_name: bill.resource_id?.name || bill.resource_name || null,
-      }));
-      return invObj;
-    });
-
-    res.json(invoicesWithNames);
+    res.json(invoices);
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: 'Failed to fetch invoices' });
@@ -138,15 +142,17 @@ router.get('/:id', async (req, res) => {
     if (!invoice) {
       return res.status(404).json({ message: 'Invoice not found' });
     }
-
-    // Enhance with populated names
+    
+    // Convert to object to handle potential null populates gracefully
     const invObj = invoice.toObject();
-    invObj.billing_records = invObj.billing_records.map(bill => ({
-      ...bill,
-      project_name: bill.project_id?.name || bill.project_name || null,
-      subproject_name: bill.subproject_id?.name || bill.subproject_name || null,
-      resource_name: bill.resource_id?.name || bill.resource_name || null,
-    }));
+    if(invObj.billing_records) {
+        invObj.billing_records = invObj.billing_records.map(bill => ({
+        ...bill,
+        project_name: bill.project_name || bill.project_id?.name || 'Unknown',
+        subproject_name: bill.subproject_name || bill.subproject_id?.name || 'Unknown',
+        resource_name: bill.resource_name || bill.resource_id?.name || 'Unknown',
+        }));
+    }
 
     res.json(invObj);
   } catch (error) {
@@ -159,90 +165,31 @@ router.get('/:id', async (req, res) => {
 router.delete('/:id', async (req, res) => {
   try {
     const invoice = await Invoice.findByIdAndDelete(req.params.id);
-    
-    if (!invoice) {
-      return res.status(404).json({ message: 'Invoice not found' });
-    }
-
+    if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
     res.json({ message: 'Invoice deleted successfully', invoice });
   } catch (error) {
-    console.error(error);
     res.status(500).json({ message: 'Failed to delete invoice' });
   }
 });
 
-// --- UPDATE INVOICE (with middleware) ---
-router.put('/:id', convertBillingIdsToObjects, async (req, res) => {
+// --- UPDATE INVOICE ---
+router.put('/:id', prepareInvoiceData, async (req, res) => {
   try {
-    const { billing_records  } = req.body;
-
+    const { billing_records } = req.body;
     const invoice = await Invoice.findById(req.params.id);
-    if (!invoice) {
-      return res.status(404).json({ message: 'Invoice not found' });
-    }
+    if (!invoice) return res.status(404).json({ message: 'Invoice not found' });
 
-    // Update billing records if provided
     if (billing_records && billing_records.length) {
       invoice.billing_records = billing_records;
     }
 
-    // Recalculate totals
     await invoice.calculateTotals();
     await invoice.save();
 
     res.json(invoice);
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ 
-      message: 'Failed to update invoice', 
-      error: error.message 
-    });
+    res.status(500).json({ message: 'Failed to update invoice', error: error.message });
   }
 });
-
-// --- PATCH INVOICE (partial update with middleware) ---
-router.patch('/:id', convertBillingIdsToObjects, async (req, res) => {
-  try {
-    const invoice = await Invoice.findById(req.params.id);
-    if (!invoice) {
-      return res.status(404).json({ message: 'Invoice not found' });
-    }
-
-    const { billing_records, ...otherFields } = req.body;
-
-    // Update billing records if provided
-    if (billing_records && billing_records.length) {
-      invoice.billing_records = billing_records;
-
-    }
-
-    // Update other fields
-    Object.keys(otherFields).forEach(key => {
-      if (key !== 'invoice_number') { // Prevent invoice number modification
-        invoice[key] = otherFields[key];
-      }
-    });
-
-    // Recalculate totals
-    await invoice.calculateTotals();
-    await invoice.save();
-
-    res.json(invoice);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ 
-      message: 'Failed to patch invoice', 
-      error: error.message 
-    });
-  }
-});
-
-// --- OPTIONAL: If you want to keep invoices immutable, uncomment these ---
-// router.put('/:id', (req, res) => {
-//   return res.status(403).json({ message: 'Invoices cannot be modified once generated.' });
-// });
-// router.patch('/:id', (req, res) => {
-//   return res.status(403).json({ message: 'Invoices cannot be modified once generated.' });
-// });
 
 module.exports = router;
