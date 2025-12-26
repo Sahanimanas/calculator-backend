@@ -203,50 +203,5 @@ router.post('/:id/toggle-billable', async (req, res) => {
   }
 });
 
-// // --- BULK create resources via CSV ---
-// router.post('/upload_csv', upload.single('file'), async (req, res) => {
-//   if (!req.file) return res.status(400).json({ message: 'CSV file required' });
-
-//   const results = [];
-//   const skipped = [];
-
-//   fs.createReadStream(req.file.path)
-//     .pipe(csv())
-//     .on('data', (row) => {
-//       if (!row.email) {
-//         skipped.push({ row, reason: 'Missing email' });
-//         return;
-//       }
-//       results.push(row);
-//     })
-//     .on('end', async () => {
-//       const created = [];
-//       for (let row of results) {
-//         try {
-//           const exists = await Resource.findOne({ email: row.email });
-//           if (exists) {
-//             skipped.push({ row, reason: 'Email exists' });
-//             continue;
-//           }
-//           const resource = new Resource({
-//             name: row.name,
-//             role: row.role,
-//             email: row.email,
-//             assigned_projects: row.assigned_projects ? row.assigned_projects.split(',') : [],
-//             assigned_subprojects: row.assigned_subprojects ? row.assigned_subprojects.split(',') : [],
-//             billable_status: row.billable_status || 'Billable',
-//             billable_inherited: row.billable_inherited !== 'false',
-//             avatar_url: row.avatar_url || ''
-//           });
-//           await resource.save();
-//           created.push(resource.email);
-//         } catch (err) {
-//           skipped.push({ row, reason: err.message });
-//         }
-//       }
-//       fs.unlinkSync(req.file.path); // cleanup
-//       res.json({ created, skipped, message: `${created.length} resources created` });
-//     });
-// });
 
 module.exports = router;
