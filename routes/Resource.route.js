@@ -6,17 +6,10 @@ const Subproject = require('../models/Subproject.js');
 const mongoose = require('mongoose');
 const Billing = require('../models/Billing');  
 const SubprojectProductivity = require('../models/SubprojectProductivity'); 
-// const multer = require('multer');
-// const csv = require('csv-parser');
-// const fs = require('fs');
-// const upload = multer({ dest: 'tmp/csv/' });
 
-// --- GET resources with filters ---
-// ================= GET RESOURCES (PAGINATED & FILTERED) =================
-// ================= GET RESOURCES (Optional Pagination) =================
+// ==================== OPTIMIZED GET RESOURCES ====================
 router.get('/', async (req, res) => {
   try {
-    // Remove defaults from destructuring to check if they exist
     const { 
       role, 
       billable_status, 
@@ -29,7 +22,6 @@ router.get('/', async (req, res) => {
 
     const query = {};
 
-    // Build Query
     if (role) query.role = role;
     if (billable_status) {
         query.isBillable = billable_status === 'billable'; 
@@ -37,100 +29,232 @@ router.get('/', async (req, res) => {
     if (project_id) query.assigned_projects = project_id;
     if (subproject_id) query.assigned_subprojects = subproject_id;
     
-    // Search (Case insensitive)
-    if (search) {
+    if (search && search.trim() !== "") {
+      const searchRegex = { $regex: search.trim(), $options: 'i' };
       query.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
-        { role: { $regex: search, $options: 'i' } }
+        { name: searchRegex },
+        { email: searchRegex },
+        { role: searchRegex }
       ];
     }
 
-    // Base Mongoose Query
-    let resourceQuery = Resource.find(query)
+    const pageNum = parseInt(page) || 1;
+    const limitNum = parseInt(limit) || 10; 
+    const skip = (pageNum - 1) * limitNum;
+
+    const [resources, total] = await Promise.all([
+      Resource.find(query)
         .populate('assigned_projects', 'name')
         .populate('assigned_subprojects', 'name')
         .sort({ createdAt: -1 })
-        .lean();
+        .skip(skip)
+        .limit(limitNum)
+        .lean(),
+      Resource.countDocuments(query)
+    ]);
 
-    let resources = [];
-    let paginationData = {};
+    const transformedResources = resources.map(r => ({
+      ...r,
+      project_names: r.assigned_projects?.map(p => p.name) || [],
+      subproject_names: r.assigned_subprojects?.map(sp => sp.name) || [],
+    }));
 
-    // === CONDITIONAL PAGINATION ===
-    // Only paginate if 'page' or 'limit' is explicitly passed in the URL
-    if (page || limit) {
-        const pageNum = parseInt(page) || 1;
-        const limitNum = parseInt(limit) || 20; // Default to 20 only if paginating
-        const skip = (pageNum - 1) * limitNum;
-
-        // Get Data + Count in parallel
-        const [paginatedResources, total] = await Promise.all([
-          resourceQuery.skip(skip).limit(limitNum),
-          Resource.countDocuments(query)
-        ]);
-
-        resources = paginatedResources;
-        paginationData = {
-            total,
-            page: pageNum,
-            totalPages: Math.ceil(total / limitNum),
-            hasMore: pageNum < Math.ceil(total / limitNum)
-        };
-    } else {
-        // === NO PAGINATION: RETURN ALL ===
-        resources = await resourceQuery;
-        
-        paginationData = {
-            total: resources.length,
-            page: 1,
-            totalPages: 1,
-            hasMore: false
-        };
-    }
-
-    // Return consistent structure
     res.json({
-      data: resources,
-      pagination: paginationData
+      resources: transformedResources,
+      totalPages: Math.ceil(total / limitNum),
+      totalResources: total,
+      currentPage: pageNum
     });
 
   } catch (err) {
-    console.error(err);
+    console.error("Error fetching resources:", err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ==================== NEW: SEARCH PROJECTS (Paginated) ====================
+// Returns max 20 results at a time based on search query
+router.get('/search-projects', async (req, res) => {
+  try {
+    const { search = '', page = 1, limit = 20, ids } = req.query;
+    
+    // If specific IDs are requested (for pre-populating selected items)
+    if (ids) {
+      const idArray = ids.split(',').filter(id => mongoose.Types.ObjectId.isValid(id));
+      if (idArray.length === 0) return res.json({ projects: [], total: 0 });
+      
+      const projects = await Project.find({ _id: { $in: idArray } })
+        .select('_id name')
+        .lean();
+      
+      return res.json({ 
+        projects: projects.map(p => ({ value: p._id, label: p.name })),
+        total: projects.length 
+      });
+    }
+
+    const query = {};
+    if (search.trim()) {
+      query.name = { $regex: search.trim(), $options: 'i' };
+    }
+
+    const pageNum = parseInt(page);
+    const limitNum = Math.min(parseInt(limit), 50); // Cap at 50
+    const skip = (pageNum - 1) * limitNum;
+
+    const [projects, total] = await Promise.all([
+      Project.find(query)
+        .select('_id name')
+        .sort({ name: 1 })
+        .skip(skip)
+        .limit(limitNum)
+        .lean(),
+      Project.countDocuments(query)
+    ]);
+
+    res.json({
+      projects: projects.map(p => ({ value: p._id, label: p.name })),
+      total,
+      hasMore: skip + projects.length < total
+    });
+
+  } catch (err) {
+    console.error("Error searching projects:", err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ==================== NEW: SEARCH SUBPROJECTS (Paginated) ====================
+// Returns max 20 results, optionally filtered by project_ids
+router.get('/search-subprojects', async (req, res) => {
+  try {
+    const { search = '', page = 1, limit = 20, project_ids, ids } = req.query;
+    
+    // If specific IDs are requested (for pre-populating selected items)
+    if (ids) {
+      const idArray = ids.split(',').filter(id => mongoose.Types.ObjectId.isValid(id));
+      if (idArray.length === 0) return res.json({ subprojects: [], total: 0 });
+      
+      const subprojects = await Subproject.find({ _id: { $in: idArray } })
+        .select('_id name project_id')
+        .lean();
+      
+      return res.json({ 
+        subprojects: subprojects.map(sp => ({ 
+          value: sp._id, 
+          label: sp.name,
+          project_id: sp.project_id 
+        })),
+        total: subprojects.length 
+      });
+    }
+
+    const query = {};
+    
+    // Filter by project IDs if provided
+    if (project_ids) {
+      const projectIdArray = project_ids.split(',').filter(id => mongoose.Types.ObjectId.isValid(id));
+      if (projectIdArray.length > 0) {
+        query.project_id = { $in: projectIdArray };
+      }
+    }
+    
+    if (search.trim()) {
+      query.name = { $regex: search.trim(), $options: 'i' };
+    }
+
+    const pageNum = parseInt(page);
+    const limitNum = Math.min(parseInt(limit), 50);
+    const skip = (pageNum - 1) * limitNum;
+
+    const [subprojects, total] = await Promise.all([
+      Subproject.find(query)
+        .select('_id name project_id')
+        .sort({ name: 1 })
+        .skip(skip)
+        .limit(limitNum)
+        .lean(),
+      Subproject.countDocuments(query)
+    ]);
+
+    res.json({
+      subprojects: subprojects.map(sp => ({ 
+        value: sp._id, 
+        label: sp.name,
+        project_id: sp.project_id 
+      })),
+      total,
+      hasMore: skip + subprojects.length < total
+    });
+
+  } catch (err) {
+    console.error("Error searching subprojects:", err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ==================== EXISTING: Get Subprojects by Project IDs ====================
+router.get('/subprojects-for-projects', async (req, res) => {
+  try {
+    const { project_ids } = req.query;
+    
+    if (!project_ids) {
+      return res.json([]);
+    }
+
+    const projectIdArray = project_ids.split(',').filter(id => mongoose.Types.ObjectId.isValid(id));
+    
+    if (projectIdArray.length === 0) {
+      return res.json([]);
+    }
+
+    const subprojects = await Subproject.find({
+      project_id: { $in: projectIdArray }
+    })
+    .select('_id name project_id')
+    .sort({ name: 1 })
+    .lean();
+
+    res.json(subprojects);
+  } catch (err) {
+    console.error("Error fetching filtered subprojects:", err);
     res.status(500).json({ message: err.message });
   }
 });
 
 // --- GET single resource ---
 router.get('/:id', async (req, res) => {
-  const resource = await Resource.findById(req.params.id)
-    .populate('assigned_projects', 'name')
-    .populate('assigned_subprojects', 'name');
-  if (!resource) return res.status(404).json({ message: 'Resource not found' });
-  res.json(resource);
+  try {
+    const resource = await Resource.findById(req.params.id)
+      .populate('assigned_projects', 'name')
+      .populate('assigned_subprojects', 'name')
+      .lean();
+
+    if (!resource) return res.status(404).json({ message: 'Resource not found' });
+    res.json(resource);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 });
 
+// --- CREATE RESOURCE ---
 router.post('/', async (req, res) => {
   try {
     let { name, role, email, assigned_projects, assigned_subprojects, avatar_url } = req.body;
 
-    // 1️⃣ Validation
     if (!name || !role || !email) {
       return res.status(400).json({ message: 'Name, role, and email are required' });
     }
 
-    // 2️⃣ Default avatar if not provided
     if (!avatar_url) {
-      avatar_url =
-        'https://imgs.search.brave.com/TJfABfGoj8ozO-c1s6H0C8LH0vqWWZvcck4eEPo6f5U/rs:fit:500:0:1:0/g:ce/aHR0cHM6Ly9tZWRp/YS5pc3RvY2twaG90/by5jb20vaWQvMTMz/NzE0NDE0Ni92ZWN0/b3IvZGVmYXVsdC1h/dmF0YXItcHJvZmls/ZS1pY29uLXZlY3Rv/ci5qcGc_cz02MTJ4/NjEyJnc9MCZrPTIw/JmM9QkliRnd1djdG/eFRXdmg1UzN2QjZi/a1QwUXY4Vm44TjVG/ZnNlcTg0Q2xHST0';
+      avatar_url = 'https://imgs.search.brave.com/TJfABfGoj8ozO-c1s6H0C8LH0vqWWZvcck4eEPo6f5U/rs:fit:500:0:1:0/g:ce/aHR0cHM6Ly9tZWRp/YS5pc3RvY2twaG90/by5jb20vaWQvMTMz/NzE0NDE0Ni92ZWN0/b3IvZGVmYXVsdC1h/dmF0YXItcHJvZmls/ZS1pY29uLXZlY3Rv/ci5qcGc_cz02MTJ4/NjEyJnc9MCZrPTIw/JmM9QkliRnd1djdG/eFRXdmg1UzN2QjZi/a1QwUXY4Vm44TjVG/ZnNlcTg0Q2xHST0';
     }
 
-    // 3️⃣ Check for duplicate email
     const existing = await Resource.findOne({ email });
     if (existing) {
       return res.status(400).json({ message: 'Email already exists' });
     }
 
-    // 4️⃣ Validate ObjectIds
     const validProjectIds = Array.isArray(assigned_projects)
       ? assigned_projects.filter(id => mongoose.Types.ObjectId.isValid(id))
       : [];
@@ -139,7 +263,6 @@ router.post('/', async (req, res) => {
       ? assigned_subprojects.filter(id => mongoose.Types.ObjectId.isValid(id))
       : [];
 
-    // 5️⃣ Create Resource
     const resource = new Resource({
       name,
       role,
@@ -150,22 +273,20 @@ router.post('/', async (req, res) => {
     });
     await resource.save();
 
-    // 6️⃣ Create Billing entries if valid assignments exist
     if (validProjectIds.length && validSubProjectIds.length) {
       const [projects, subprojects, productivityData] = await Promise.all([
-        Project.find({ _id: { $in: validProjectIds } }),
-        Subproject.find({ _id: { $in: validSubProjectIds } }),
+        Project.find({ _id: { $in: validProjectIds } }).lean(),
+        Subproject.find({ _id: { $in: validSubProjectIds } }).lean(),
         SubprojectProductivity.find({
           project_id: { $in: validProjectIds },
           subproject_id: { $in: validSubProjectIds },
-        }),
+        }).lean(),
       ]);
 
       const billingRecords = [];
 
       for (const project of projects) {
         for (const subproject of subprojects) {
-          // Find matching productivity
           const prod = productivityData.find(
             (p) =>
               p.project_id.toString() === project._id.toString() &&
@@ -174,8 +295,6 @@ router.post('/', async (req, res) => {
 
           const productivity_level = prod ? prod.level : 'medium';
           const rate = prod ? prod.base_rate : 0;
-
-          // ✅ Include flatrate from the Project model
           const flatrate = project.flatrate || 0;
 
           billingRecords.push({
@@ -198,13 +317,12 @@ router.post('/', async (req, res) => {
           });
         }
       }
-console.log(billingRecords)
+
       if (billingRecords.length) {
         await Billing.insertMany(billingRecords);
       }
     }
 
-    // 7️⃣ Response
     res.status(201).json({
       message: 'Resource and billing created successfully',
       resource,
@@ -221,7 +339,6 @@ router.put('/:id', async (req, res) => {
     const resource = await Resource.findById(req.params.id);
     if (!resource) return res.status(404).json({ message: 'Resource not found' });
 
-    // prevent duplicate email
     if (req.body.email && req.body.email !== resource.email) {
       const exists = await Resource.findOne({ email: req.body.email });
       if (exists) return res.status(400).json({ message: 'Email already exists' });
@@ -254,7 +371,7 @@ router.post('/:id/toggle-billable', async (req, res) => {
     if (!resource) return res.status(404).json({ message: 'Resource not found' });
 
     resource.billable_status = resource.billable_status === 'Billable' ? 'Non-Billable' : 'Billable';
-    resource.billable_inherited = false; // overridden
+    resource.billable_inherited = false;
     await resource.save();
 
     res.json({ message: `Billable status changed to ${resource.billable_status}`, resource });
@@ -262,6 +379,5 @@ router.post('/:id/toggle-billable', async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 });
-
 
 module.exports = router;

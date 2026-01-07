@@ -1,33 +1,23 @@
-// models/Project.js
+// models/Project.js - UPDATED
 const mongoose = require('mongoose');
-const Subproject = require('./Subproject.js');
-const SubprojectProductivity = require('./SubprojectProductivity');
+
 const ProjectSchema = new mongoose.Schema({
-  name: { type: String, required: true },
+  name: { type: String, required: true, trim: true },
   description: String,
+  
+  // Hierarchical references
+  geography_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Geography', required: true },
+  client_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Client', required: true },
+  
+  // Denormalized fields for quick access and display
+  geography_name: String,
+  client_name: String,
+  
   visibility: { type: String, enum: ['visible', 'hidden'], default: 'visible' },
   status: { type: String, enum: ['active', 'inactive'], default: 'active' },
 }, { timestamps: { createdAt: 'created_on', updatedAt: 'updated_at' } });
 
-// Cascade delete Subprojects and their Productivities
-ProjectSchema.pre('deleteOne', { document: true, query: false }, async function(next) {
-  try {
-    const projectId = this._id;
-
-    // 1️⃣ Delete all productivity tiers for subprojects of this project
-    const subprojects = await Subproject.find({ project_id: projectId });
-    const subprojectIds = subprojects.map(sp => sp._id);
-
-    await SubprojectProductivity.deleteMany({ subproject_id: { $in: subprojectIds } });
-
-    // 2️⃣ Delete all subprojects
-    await Subproject.deleteMany({ project_id: projectId });
-
-    next();
-  } catch (err) {
-    next(err);
-  }
-});
-
+// Ensure unique project name per client
+ProjectSchema.index({ client_id: 1, name: 1 }, { unique: true });
 
 module.exports = mongoose.model('Project', ProjectSchema);

@@ -45,8 +45,11 @@ app.use('/api/billing', require('./routes/billing.route'));
 app.use('/api/invoices', require('./routes/Invoice.route'));
 app.use('/api/calculator', require('./routes/calculator.route'));
 app.use('/api/dashboard', require('./routes/dashboard.route'));
+app.use('/api/geography', require('./routes/geography.routes'));
+app.use('/api/client', require('./routes/client.routes'));
 app.use('/api/masterdb', require('./routes/masterdb.route'));
 app.use('/api/upload', require('./routes/bulkupload.route'));
+app.use('/api/allocation', require('./routes/allocation-upload.routes'));
 // app.use('/api/auditlogs', require('./routes/auditlog.route'));
 app.get('/', (req, res) => {
     res.send('API is running...');
