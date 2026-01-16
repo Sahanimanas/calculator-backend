@@ -1,4 +1,4 @@
-// routes/dashboard.js
+// routes/dashboard.js - UPDATED WITH CLIENT FILTER SUPPORT
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
@@ -8,9 +8,11 @@ const Subproject = require('../models/Subproject');
 const SubprojectRequestType = require('../models/SubprojectRequestType');
 
 // ================= GET DASHBOARD SUMMARY =================
-router.get('/billing-summary', async (req, res) => {
+router.get('/billing-summary', async (req, res) => {  
   try {
     const {
+      geography_id,
+      client_id,
       project_id,
       subproject_id,
       month,
@@ -25,6 +27,14 @@ router.get('/billing-summary', async (req, res) => {
 
     if (month && month !== 'all') {
       matchQuery.month = parseInt(month);
+    }
+
+    if (geography_id) {
+      matchQuery.geography_id = new mongoose.Types.ObjectId(geography_id);
+    }
+
+    if (client_id) {
+      matchQuery.client_id = new mongoose.Types.ObjectId(client_id);
     }
 
     if (project_id) {
@@ -207,7 +217,7 @@ router.get('/billing-summary', async (req, res) => {
 // ================= GET DASHBOARD SUMMARY BY PROJECT =================
 router.get('/project-summary', async (req, res) => {
   try {
-    const { month, year } = req.query;
+    const { month, year, geography_id, client_id } = req.query;
 
     const matchQuery = {
       year: parseInt(year) || new Date().getFullYear()
@@ -215,6 +225,14 @@ router.get('/project-summary', async (req, res) => {
 
     if (month && month !== 'all') {
       matchQuery.month = parseInt(month);
+    }
+
+    if (geography_id) {
+      matchQuery.geography_id = new mongoose.Types.ObjectId(geography_id);
+    }
+
+    if (client_id) {
+      matchQuery.client_id = new mongoose.Types.ObjectId(client_id);
     }
 
     const pipeline = [

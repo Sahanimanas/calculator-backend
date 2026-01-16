@@ -471,6 +471,7 @@ router.get('/allocation-summary', async (req, res) => {
       month, 
       start_date,
       end_date,
+      client_id, 
       geography_id,
       geography_type, 
       project_id, 
@@ -501,7 +502,11 @@ router.get('/allocation-summary', async (req, res) => {
       query.geography_type = geography_type;
       console.log('🌍 Filtering by geography type:', geography_type);
     }
-    
+    if (client_id) {
+      query.client_id = new mongoose.Types.ObjectId(client_id);
+      // console.log('🏢 Filtering by client:', client_id);
+    }
+
     if (project_id) {
       query.project_id = new mongoose.Types.ObjectId(project_id);
       console.log('📁 Filtering by project:', project_id);
@@ -511,6 +516,7 @@ router.get('/allocation-summary', async (req, res) => {
       query.subproject_id = new mongoose.Types.ObjectId(subproject_id);
       console.log('📍 Filtering by subproject:', subproject_id);
     }
+
     
     if (search) {
       query.$or = [

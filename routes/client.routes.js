@@ -61,24 +61,135 @@ router.get('/geography/:geographyId', async (req, res) => {
   }
 });
 
-// ==================== GET ALL CLIENTS (for dropdowns) ====================
-router.get('/', async (req, res) => {
+// ==================== SEARCH CLIENTS ====================
+router.get('/search', async (req, res) => {
   try {
-    const { status, geography_id } = req.query;
+    const { query, geography_id, limit = 10 } = req.query;
 
-    // Build query
-    const query = {};
-    if (status) query.status = status;
-    if (geography_id) query.geography_id = geography_id;
+    if (!query) {
+      return res.status(400).json({ error: 'Search query is required' });
+    }
 
-    const clients = await Client.find(query)
+    const searchQuery = {
+      $or: [
+        { name: { $regex: query, $options: 'i' } },
+        { description: { $regex: query, $options: 'i' } }
+      ]
+    };
+
+    if (geography_id) {
+      searchQuery.geography_id = geography_id;
+    }
+
+    const clients = await Client.find(searchQuery)
       .populate('geography_id', 'name')
+      .limit(parseInt(limit))
       .sort({ name: 1 })
       .lean();
 
     res.status(200).json(clients);
   } catch (error) {
+    console.error('Error searching clients:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==================== GET ALL CLIENTS (for dropdowns) ====================
+router.get('/', async (req, res) => {
+  try {
+    const { status, geography_id, search, limit = 50 } = req.query;
+
+    // Build query
+    const query = {};
+    if (status) query.status = status;
+    if (geography_id) query.geography_id = geography_id; // Optional filter
+    if (search) {
+      query.name = { $regex: search, $options: 'i' };
+    }
+
+    const clients = await Client.find(query)
+      .populate('geography_id', 'name')
+      .sort({ name: 1 })
+      .limit(parseInt(limit))
+      .lean();
+
+    res.status(200).json(clients);
+  } catch (error) {
     console.error('Error fetching clients:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==================== GET PROJECTS BY CLIENT (NEW - for dashboard filter) ====================
+router.get('/:id/project', async (req, res) => {
+  try {
+    const { search, page = 1, limit = 50 } = req.query;
+    const clientId = req.params.id;
+
+    // Verify client exists
+    const client = await Client.findById(clientId);
+    if (!client) {
+      return res.status(404).json({ error: 'Client not found' });
+    }
+
+    // Build query
+    const query = { client_id: clientId };
+    
+    if (search && search.trim()) {
+      query.name = { $regex: search.trim(), $options: 'i' };
+    }
+
+    // Get projects
+    const projects = await Project.find(query)
+      .select('_id name status')
+      .sort({ name: 1 })
+      .limit(parseInt(limit))
+      .lean();
+
+    res.status(200).json({
+      projects,
+      client: {
+        _id: client._id,
+        name: client.name
+      },
+      count: projects.length
+    });
+  } catch (error) {
+    console.error('Error fetching projects for client:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==================== GET CLIENT STATS ====================
+router.get('/:id/stats', async (req, res) => {
+  try {
+    const client = await Client.findById(req.params.id)
+      .populate('geography_id', 'name');
+    
+    if (!client) {
+      return res.status(404).json({ error: 'Client not found' });
+    }
+
+    const projectCount = await Project.countDocuments({ 
+      client_id: req.params.id 
+    });
+
+    // Get active vs inactive projects
+    const [activeProjects, inactiveProjects] = await Promise.all([
+      Project.countDocuments({ client_id: req.params.id, status: 'active' }),
+      Project.countDocuments({ client_id: req.params.id, status: 'inactive' })
+    ]);
+
+    res.status(200).json({
+      client,
+      stats: {
+        totalProjects: projectCount,
+        activeProjects,
+        inactiveProjects
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching client stats:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -266,40 +377,6 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-// ==================== GET CLIENT STATS ====================
-router.get('/:id/stats', async (req, res) => {
-  try {
-    const client = await Client.findById(req.params.id)
-      .populate('geography_id', 'name');
-    
-    if (!client) {
-      return res.status(404).json({ error: 'Client not found' });
-    }
-
-    const projectCount = await Project.countDocuments({ 
-      client_id: req.params.id 
-    });
-
-    // Get active vs inactive projects
-    const [activeProjects, inactiveProjects] = await Promise.all([
-      Project.countDocuments({ client_id: req.params.id, status: 'active' }),
-      Project.countDocuments({ client_id: req.params.id, status: 'inactive' })
-    ]);
-
-    res.status(200).json({
-      client,
-      stats: {
-        totalProjects: projectCount,
-        activeProjects,
-        inactiveProjects
-      }
-    });
-  } catch (error) {
-    console.error('Error fetching client stats:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
 // ==================== BULK DELETE CLIENTS ====================
 router.post('/bulk-delete', async (req, res) => {
   try {
@@ -330,39 +407,6 @@ router.post('/bulk-delete', async (req, res) => {
     });
   } catch (error) {
     console.error('Error bulk deleting clients:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ==================== SEARCH CLIENTS ====================
-router.get('/search', async (req, res) => {
-  try {
-    const { query, geography_id, limit = 10 } = req.query;
-
-    if (!query) {
-      return res.status(400).json({ error: 'Search query is required' });
-    }
-
-    const searchQuery = {
-      $or: [
-        { name: { $regex: query, $options: 'i' } },
-        { description: { $regex: query, $options: 'i' } }
-      ]
-    };
-
-    if (geography_id) {
-      searchQuery.geography_id = geography_id;
-    }
-
-    const clients = await Client.find(searchQuery)
-      .populate('geography_id', 'name')
-      .limit(parseInt(limit))
-      .sort({ name: 1 })
-      .lean();
-
-    res.status(200).json(clients);
-  } catch (error) {
-    console.error('Error searching clients:', error);
     res.status(500).json({ error: error.message });
   }
 });

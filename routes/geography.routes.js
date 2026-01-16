@@ -59,6 +59,46 @@ router.get('/', async (req, res) => {
   }
 });
 
+// ==================== GET CLIENTS BY GEOGRAPHY ====================
+router.get('/:id/client', async (req, res) => {
+  try {
+    const { search, page = 1, limit = 50 } = req.query;
+    const geographyId = req.params.id;
+
+    // Verify geography exists
+    const geography = await Geography.findById(geographyId);
+    if (!geography) {
+      return res.status(404).json({ error: 'Geography not found' });
+    }
+
+    // Build query
+    const query = { geography_id: geographyId };
+    
+    if (search && search.trim()) {
+      query.name = { $regex: search.trim(), $options: 'i' };
+    }
+
+    // Get clients
+    const clients = await Client.find(query)
+      .select('_id name status')
+      .sort({ name: 1 })
+      .limit(parseInt(limit))
+      .lean();
+
+    res.status(200).json({
+      clients,
+      geography: {
+        _id: geography._id,
+        name: geography.name
+      },
+      count: clients.length
+    });
+  } catch (error) {
+    console.error('Error fetching clients for geography:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ==================== GET GEOGRAPHY BY ID ====================
 router.get('/:id', async (req, res) => {
   try {
