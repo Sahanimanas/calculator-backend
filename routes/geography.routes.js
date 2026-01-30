@@ -4,7 +4,7 @@ const router = express.Router();
 const Geography = require('../models/Geography');
 const Client = require('../models/Client');
 const Project = require('../models/Project');
-
+const Subproject = require('../models/Subproject');
 // ==================== GET ALL GEOGRAPHIES (with pagination) ====================
 router.get('/', async (req, res) => {
   try {
@@ -217,28 +217,91 @@ router.put('/:id', async (req, res) => {
 });
 
 // ==================== DELETE GEOGRAPHY ====================
+// routes/geography.routes.js - DELETE endpoint with cascade deletion support
+
 router.delete('/:id', async (req, res) => {
   try {
-    // Check if geography has clients
-    const clientCount = await Client.countDocuments({ 
-      geography_id: req.params.id 
-    });
-    
-    if (clientCount > 0) {
-      return res.status(400).json({ 
-        error: `Cannot delete geography with ${clientCount} existing client(s). Delete clients first.` 
-      });
-    }
+    const { cascade } = req.query; // Check if cascade delete is requested
+    const geographyId = req.params.id;
 
-    const geography = await Geography.findByIdAndDelete(req.params.id);
-    
+    // Find the geography first
+    const geography = await Geography.findById(geographyId);
     if (!geography) {
       return res.status(404).json({ error: 'Geography not found' });
     }
 
+    // Get all clients under this geography
+    const clients = await Client.find({ geography_id: geographyId });
+    const clientIds = clients.map(c => c._id);
+    const clientCount = clients.length;
+
+    // If cascade is not requested and there are clients, prevent deletion
+    if (!cascade && clientCount > 0) {
+      return res.status(400).json({ 
+        error: `Cannot delete geography with ${clientCount} existing client(s). Delete clients first or use cascade delete.`,
+        clientCount
+      });
+    }
+
+    // If cascade delete is requested, delete everything
+    if (cascade && cascade === 'true') {
+      let deletedProjects = 0;
+      let deletedLocations = 0;
+      let deletedClients = 0;
+
+      // Get all projects under all clients
+      const projects = await Project.find({ client_id: { $in: clientIds } });
+      const projectIds = projects.map(p => p._id);
+
+      // Delete all subprojects/locations under all projects
+      if (projectIds.length > 0) {
+        const locationResult = await Subproject.deleteMany({ project_id: { $in: projectIds } });
+        deletedLocations = locationResult.deletedCount || 0;
+      }
+
+      // Delete all projects under all clients
+      if (clientIds.length > 0) {
+        const projectResult = await Project.deleteMany({ client_id: { $in: clientIds } });
+        deletedProjects = projectResult.deletedCount || 0;
+      }
+
+      // Delete all clients under this geography
+      if (clientIds.length > 0) {
+        const clientResult = await Client.deleteMany({ geography_id: geographyId });
+        deletedClients = clientResult.deletedCount || 0;
+      }
+
+      // Finally, delete the geography
+      await Geography.findByIdAndDelete(geographyId);
+
+      console.log(`Cascade deleted geography ${geography.name}: ${deletedClients} clients, ${deletedProjects} projects, ${deletedLocations} locations`);
+
+      return res.status(200).json({ 
+        message: 'Geography and all nested data deleted successfully',
+        deletedGeography: geography,
+        deletedCounts: {
+          geography: 1,
+          clients: deletedClients,
+          projects: deletedProjects,
+          locations: deletedLocations,
+          total: 1 + deletedClients + deletedProjects + deletedLocations
+        }
+      });
+    }
+
+    // Normal delete (no clients exist)
+    await Geography.findByIdAndDelete(geographyId);
+
     res.status(200).json({ 
       message: 'Geography deleted successfully',
-      deletedGeography: geography
+      deletedGeography: geography,
+      deletedCounts: {
+        geography: 1,
+        clients: 0,
+        projects: 0,
+        locations: 0,
+        total: 1
+      }
     });
   } catch (error) {
     console.error('Error deleting geography:', error);

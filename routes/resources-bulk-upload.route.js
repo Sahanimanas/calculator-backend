@@ -1,472 +1,664 @@
-// routes/resourceUpload.js
+// routes/upload-resource.routes.js - Resource CSV Upload with correct assignments structure
 const express = require("express");
 const router = express.Router();
 const multer = require("multer");
 const csv = require("csv-parser");
 const fs = require("fs");
-const mongoose = require("mongoose");
 const { Parser } = require("json2csv");
 
 const Resource = require("../models/Resource");
+const Geography = require("../models/Geography");
+const Client = require("../models/Client");
 const Project = require("../models/Project");
 const Subproject = require("../models/Subproject");
-const Billing = require("../models/Billing");
-const SubprojectRequestType = require("../models/SubprojectRequestType");
-const Productivity = require("../models/SubprojectProductivity");
 
 const upload = multer({ dest: "uploads/" });
 
-// Helper functions
 const norm = (s) => (typeof s === "string" ? s.trim() : "");
 
-// All request types - billing created for each
-const ALL_REQUEST_TYPES = ["New Request", "Key", "Duplicate"];
-
-// Batch size for processing
-const BATCH_SIZE = 100;
-
-const DEFAULT_AVATAR = "https://imgs.search.brave.com/TJfABfGoj8ozO-c1s6H0C8LH0vqWWZvcck4eEPo6f5U/rs:fit:500:0:1:0/g:ce/aHR0cHM6Ly9tZWRp/YS5pc3RvY2twaG90/by5jb20vaWQvMTMz/NzE0NDE0Ni92ZWN0/b3IvZGVmYXVsdC1h/dmF0YXItcHJvZmls/ZS1pY29uLXZlY3Rv/ci5qcGc_cz02MTJ4/NjEyJnc9MCZrPTIw/JmM9QkliRnd1djdG/eFRXdmg1UzN2QjZi/a1QwUXY4Vm44TjVG/ZnNlcTg0Q2xHST0";
-
-router.post("/bul", upload.single("file"), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: "CSV file is required" });
-  }
+// =============================================
+// RESOURCE BULK UPLOAD
+// CSV Format: Name, Location, Process Type, Client, Geography, Email ID
+// Saves to assignments array with proper structure:
+// assignments: [{ geography_id, geography_name, client_id, client_name, project_id, project_name, subprojects: [{ subproject_id, subproject_name }] }]
+// =============================================
+router.post("/bulk", upload.single("file"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
   const filePath = req.file.path;
   const rows = [];
-  const errors = [];
 
   try {
-    // ----------------------------------------
-    // 1. READ CSV
-    // ----------------------------------------
+    console.log("⏱️ Resource Bulk Upload started...");
+
+    // 1. Read CSV
     await new Promise((resolve, reject) => {
       fs.createReadStream(filePath)
-        .pipe(csv({ mapHeaders: ({ header }) => header.trim().toLowerCase() }))
+        .pipe(
+          csv({
+            mapHeaders: ({ header }) => {
+              const h = header.toLowerCase().trim();
+              if (h === "name" || h === "resource name" || h === "resource") return "name";
+              if (h === "location" || h === "subproject" || h === "sub-project" || h === "sub project") return "location";
+              if (h === "process type" || h === "process_type" || h === "processtype" || h === "project") return "process_type";
+              if (h === "client" || h === "client name" || h === "client_name") return "client";
+              if (h === "geography" || h === "geo" || h === "region") return "geography";
+              if (h === "email" || h === "email id" || h === "email_id" || h === "emailid") return "email";
+              if (h === "role") return "role";
+              return header;
+            },
+          })
+        )
         .on("data", (row) => {
-          if (Object.values(row).some((v) => v)) {
-            rows.push(row);
-          }
+          if (Object.values(row).every((v) => !v)) return;
+          rows.push(row);
         })
         .on("end", resolve)
         .on("error", reject);
     });
-
-    if (rows.length === 0) {
-      fs.unlinkSync(filePath);
-      return res.status(400).json({ error: "CSV is empty" });
-    }
 
     console.log(`📄 Read ${rows.length} rows from CSV`);
 
-    // ----------------------------------------
-    // 2. PARSE AND MAP COLUMNS
-    // ----------------------------------------
-    const parsed = rows.map((r, i) => {
-      const name = norm(r["resource name"] || r["name"]);
-      const generatedEmail = name 
-        ? `${name.replace(/\s+/g, '.').toLowerCase()}@placeholder.com` 
-        : "";
+    // 2. Validate rows
+    const errors = [];
+    const validRows = [];
 
-      return {
-        __row: i + 1,
-        name: name,
-        projects_raw: norm(r["process type"] || r["projects"]),
-        role: norm(r["role"] || "Employee"),
-        email: norm(r["email"] || generatedEmail),
-      };
-    });
+    for (let idx = 0; idx < rows.length; idx++) {
+      const r = rows[idx];
+      const rowNum = idx + 2;
 
-    // ----------------------------------------
-    // 3. VALIDATION
-    // ----------------------------------------
-    const validParsed = [];
+      const name = norm(r.name);
+      const location = norm(r.location);
+      const processType = norm(r.process_type);
+      const clientName = norm(r.client);
+      const geographyName = norm(r.geography);
+      const email = norm(r.email);
+      const role = norm(r.role) || "associate";
 
-    parsed.forEach(row => {
       const rowErrors = [];
-      if (!row.name) rowErrors.push("resource name required");
-      if (!row.email) rowErrors.push("email required");
 
-      if (rowErrors.length) {
-        errors.push({ ...row, errors: rowErrors.join("; ") });
+      if (!name) rowErrors.push("Name is required");
+      if (!email) rowErrors.push("Email is required");
+      if (!location) rowErrors.push("Location is required");
+      if (!processType) rowErrors.push("Process Type is required");
+      if (!clientName) rowErrors.push("Client is required");
+      if (!geographyName) rowErrors.push("Geography is required");
+
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        rowErrors.push("Invalid email format");
+      }
+
+      if (rowErrors.length > 0) {
+        errors.push({
+          row: rowNum,
+          name,
+          location,
+          process_type: processType,
+          client: clientName,
+          geography: geographyName,
+          email,
+          errors: rowErrors.join("; "),
+        });
       } else {
-        validParsed.push(row);
-      }
-    });
-
-    if (errors.length > 0) {
-      return returnErrorCsv(res, filePath, errors);
-    }
-
-    console.log(`✅ Validated ${validParsed.length} rows`);
-
-    // ----------------------------------------
-    // 4. PRELOAD DATA & BUILD LOOKUP MAPS
-    // ----------------------------------------
-    console.log("📊 Loading existing data...");
-
-    const allProjects = await Project.find({}).lean();
-    const projectMap = new Map(
-      allProjects.map((p) => [p.name.trim().toLowerCase(), p])
-    );
-
-    const allSubprojects = await Subproject.find({}).lean();
-    
-    // Map: ProjectID -> Array of Subprojects
-    const subprojectByProjectMap = new Map();
-    allSubprojects.forEach(sp => {
-      const pId = sp.project_id.toString();
-      if (!subprojectByProjectMap.has(pId)) {
-        subprojectByProjectMap.set(pId, []);
-      }
-      subprojectByProjectMap.get(pId).push(sp);
-    });
-
-    // Map: SubprojectID -> Array of Request Types
-    const allRequestTypes = await SubprojectRequestType.find({}).lean();
-    const requestTypeBySubprojectMap = new Map();
-    allRequestTypes.forEach(rt => {
-      const spId = rt.subproject_id.toString();
-      if (!requestTypeBySubprojectMap.has(spId)) {
-        requestTypeBySubprojectMap.set(spId, []);
-      }
-      requestTypeBySubprojectMap.get(spId).push(rt);
-    });
-
-    // Map: SubprojectID -> Productivity rates
-    const allProductivity = await Productivity.find({}).lean();
-    const productivityMap = new Map();
-    allProductivity.forEach(p => {
-      const spId = p.subproject_id.toString();
-      if (!productivityMap.has(spId)) {
-        productivityMap.set(spId, []);
-      }
-      productivityMap.get(spId).push({
-        level: p.level.toLowerCase(),
-        base_rate: p.base_rate || 0
-      });
-    });
-
-    console.log(`  📁 Projects: ${allProjects.length}`);
-    console.log(`  📂 Subprojects: ${allSubprojects.length}`);
-    console.log(`  📋 Request Types: ${allRequestTypes.length}`);
-
-    // ----------------------------------------
-    // 5. VALIDATE PROJECT EXISTENCE
-    // ----------------------------------------
-    for (const r of validParsed) {
-      const projectNames = r.projects_raw
-        ? r.projects_raw.split(",").map((p) => p.trim().toLowerCase())
-        : [];
-
-      for (const p of projectNames) {
-        if (p && !projectMap.has(p)) {
-          errors.push({
-            __row: r.__row,
-            name: r.name,
-            errors: `Process Type (Project) not found: ${p}`,
-          });
-        }
+        validRows.push({
+          rowNum,
+          name,
+          location,
+          processType,
+          clientName,
+          geographyName,
+          email,
+          role,
+        });
       }
     }
 
-    if (errors.length > 0) {
-      return returnErrorCsv(res, filePath, errors);
+    console.log(`✅ Validated: ${validRows.length} valid, ${errors.length} errors`);
+
+    // 3. Process valid rows - Group by resource email
+    // Build assignments in the correct format
+    const resourceMap = new Map(); // email -> { name, email, role, assignmentsMap }
+
+    for (const row of validRows) {
+      // Find Geography
+      const geography = await Geography.findOne({
+        name: { $regex: new RegExp(`^${row.geographyName}$`, "i") },
+      }).lean();
+
+      if (!geography) {
+        errors.push({
+          row: row.rowNum,
+          name: row.name,
+          location: row.location,
+          process_type: row.processType,
+          client: row.clientName,
+          geography: row.geographyName,
+          email: row.email,
+          errors: `Geography "${row.geographyName}" not found`,
+        });
+        continue;
+      }
+
+      // Find Client
+      const client = await Client.findOne({
+        geography_id: geography._id,
+        name: { $regex: new RegExp(`^${row.clientName}$`, "i") },
+      }).lean();
+
+      if (!client) {
+        errors.push({
+          row: row.rowNum,
+          name: row.name,
+          location: row.location,
+          process_type: row.processType,
+          client: row.clientName,
+          geography: row.geographyName,
+          email: row.email,
+          errors: `Client "${row.clientName}" not found under geography "${row.geographyName}"`,
+        });
+        continue;
+      }
+
+      // Find Project (Process Type)
+      let project = await Project.findOne({
+        client_id: client._id,
+        name: { $regex: new RegExp(`^${row.processType}$`, "i") },
+      }).lean();
+
+      // Try partial match if exact match not found
+      if (!project) {
+        const processTypeWords = row.processType.toLowerCase().split(/\s+/);
+        const lastWord = processTypeWords[processTypeWords.length - 1];
+        
+        project = await Project.findOne({
+          client_id: client._id,
+          name: { $regex: new RegExp(lastWord, "i") },
+        }).lean();
+      }
+
+      if (!project) {
+        errors.push({
+          row: row.rowNum,
+          name: row.name,
+          location: row.location,
+          process_type: row.processType,
+          client: row.clientName,
+          geography: row.geographyName,
+          email: row.email,
+          errors: `Process Type "${row.processType}" not found under client "${row.clientName}"`,
+        });
+        continue;
+      }
+
+      // Find Subproject (Location)
+      const subproject = await Subproject.findOne({
+        project_id: project._id,
+        name: { $regex: new RegExp(`^${row.location}$`, "i") },
+      }).lean();
+
+      if (!subproject) {
+        errors.push({
+          row: row.rowNum,
+          name: row.name,
+          location: row.location,
+          process_type: row.processType,
+          client: row.clientName,
+          geography: row.geographyName,
+          email: row.email,
+          errors: `Location "${row.location}" not found under process type "${project.name}"`,
+        });
+        continue;
+      }
+
+      // Add to resource map with proper assignment structure
+      const emailKey = row.email.toLowerCase();
+      if (!resourceMap.has(emailKey)) {
+        resourceMap.set(emailKey, {
+          name: row.name,
+          email: row.email,
+          role: row.role,
+          // Map: "geoId|clientId|projectId" -> assignment object
+          assignmentsMap: new Map(),
+        });
+      }
+
+      const resourceData = resourceMap.get(emailKey);
+      
+      // Create key for this assignment group (geography + client + project)
+      const assignmentKey = `${geography._id}|${client._id}|${project._id}`;
+      
+      if (!resourceData.assignmentsMap.has(assignmentKey)) {
+        resourceData.assignmentsMap.set(assignmentKey, {
+          geography_id: geography._id,
+          geography_name: geography.name,
+          client_id: client._id,
+          client_name: client.name,
+          project_id: project._id,
+          project_name: project.name,
+          subprojectsMap: new Map(), // subproject_id string -> { subproject_id, subproject_name }
+        });
+      }
+
+      // Add subproject to this assignment
+      const assignment = resourceData.assignmentsMap.get(assignmentKey);
+      const spIdStr = subproject._id.toString();
+      if (!assignment.subprojectsMap.has(spIdStr)) {
+        assignment.subprojectsMap.set(spIdStr, {
+          subproject_id: subproject._id,
+          subproject_name: subproject.name,
+        });
+      }
     }
 
-    // ----------------------------------------
-    // 6. PROCESS RESOURCES (No Transaction)
-    // ----------------------------------------
-    console.log("📝 Processing resources...");
-
-    let processedCount = 0;
-    let billingCreatedCount = 0;
-    const failedRecords = [];
-    const currentYear = new Date().getFullYear();
-    const currentMonth = new Date().getMonth() + 1;
-
-    // Helper to get rate for a productivity level
-    const getRateForLevel = (subprojectId, level = 'medium') => {
-      const rates = productivityMap.get(subprojectId.toString()) || [];
-      const found = rates.find(r => r.level === level.toLowerCase());
-      return found ? found.base_rate : 0;
+    // 4. Create/Update Resources with proper assignments structure
+    const stats = {
+      created: 0,
+      updated: 0,
+      assignments: 0,
     };
 
-    for (let i = 0; i < validParsed.length; i += BATCH_SIZE) {
-      const batch = validParsed.slice(i, i + BATCH_SIZE);
-
-      for (const r of batch) {
-        try {
-          // 1. Get Project IDs
-          const projectObjs = r.projects_raw
-            ? r.projects_raw.split(",")
-                .map((p) => p.trim().toLowerCase())
-                .filter(p => p && projectMap.has(p))
-                .map((p) => projectMap.get(p))
-            : [];
-
-          const projectIds = projectObjs.map(p => p._id);
-
-          // 2. Get all Subprojects for these Projects
-          let autoSubprojectIds = [];
-          projectIds.forEach(pid => {
-            const subs = subprojectByProjectMap.get(pid.toString()) || [];
-            subs.forEach(sp => autoSubprojectIds.push(sp._id));
-          });
-
-          // 3. Find or Create Resource (using upsert)
-          const resource = await Resource.findOneAndUpdate(
-            { email: r.email },
-            {
-              $set: {
-                name: r.name,
-                role: r.role,
-              },
-              $setOnInsert: {
-                email: r.email,
-                avatar_url: DEFAULT_AVATAR,
-              },
-              $addToSet: {
-                assigned_projects: { $each: projectIds },
-                assigned_subprojects: { $each: autoSubprojectIds },
-              }
-            },
-            { upsert: true, new: true }
-          );
-
-          // 4. Create Billing Records for each Project -> Subproject -> Request Type
-          for (const pid of projectIds) {
-            const projectObj = projectObjs.find(p => p._id.equals(pid));
-            const relevantSubprojects = subprojectByProjectMap.get(pid.toString()) || [];
-
-            for (const sp of relevantSubprojects) {
-              // Get request types for this subproject
-              const subprojectRequestTypes = requestTypeBySubprojectMap.get(sp._id.toString()) || [];
-              
-              // If no request types defined, use default ALL_REQUEST_TYPES
-              const typesToCreate = subprojectRequestTypes.length > 0
-                ? subprojectRequestTypes.map(rt => rt.name)
-                : ALL_REQUEST_TYPES;
-
-              // Get medium rate for this subproject
-              const mediumRate = getRateForLevel(sp._id, 'medium');
-
-              // Create billing for EACH request type
-              for (const reqType of typesToCreate) {
-                const filter = {
-                  project_id: pid,
-                  subproject_id: sp._id,
-                  resource_id: resource._id,
-                  request_type: reqType,
-                  month: currentMonth,
-                  year: currentYear
-                };
-
-                const updateData = {
-                  $setOnInsert: {
-                    project_id: pid,
-                    subproject_id: sp._id,
-                    resource_id: resource._id,
-                    request_type: reqType,
-                    month: currentMonth,
-                    year: currentYear,
-                    project_name: projectObj?.name || "Unknown",
-                    subproject_name: sp.name || "",
-                    resource_name: resource.name,
-                    resource_role: resource.role,
-                    rate: mediumRate,
-                    flatrate: sp.flatrate || 0,
-                    hours: 0,
-                    costing: 0,
-                    total_amount: 0,
-                    productivity_level: "Medium",
-                    billable_status: "Billable",
-                    description: `Auto-generated for ${sp.name} - ${reqType}`
-                  }
-                };
-
-                await Billing.findOneAndUpdate(filter, updateData, { upsert: true });
-                billingCreatedCount++;
-              }
-            }
-          }
-
-          processedCount++;
-
-        } catch (recordErr) {
-          console.error(`❌ Error processing row ${r.__row}:`, recordErr.message);
-          failedRecords.push({
-            __row: r.__row,
-            name: r.name,
-            error: recordErr.message
-          });
-        }
+    for (const [email, data] of resourceMap) {
+      // Convert maps to arrays for the assignments
+      const newAssignments = [];
+      for (const [, assignmentData] of data.assignmentsMap) {
+        const subprojects = Array.from(assignmentData.subprojectsMap.values());
+        newAssignments.push({
+          geography_id: assignmentData.geography_id,
+          geography_name: assignmentData.geography_name,
+          client_id: assignmentData.client_id,
+          client_name: assignmentData.client_name,
+          project_id: assignmentData.project_id,
+          project_name: assignmentData.project_name,
+          subprojects: subprojects,
+        });
+        stats.assignments += subprojects.length;
       }
 
-      console.log(`  📦 Batch ${Math.floor(i / BATCH_SIZE) + 1}: Processed ${Math.min(i + BATCH_SIZE, validParsed.length)}/${validParsed.length} resources`);
+      // Check if resource exists
+      let resource = await Resource.findOne({ email: { $regex: new RegExp(`^${email}$`, "i") } });
+
+      if (resource) {
+        // Merge assignments with existing ones
+        for (const newAssignment of newAssignments) {
+          // Find existing assignment with same geo/client/project
+          const existingAssignmentIndex = resource.assignments.findIndex(
+            (a) =>
+              a.geography_id?.toString() === newAssignment.geography_id.toString() &&
+              a.client_id?.toString() === newAssignment.client_id.toString() &&
+              a.project_id?.toString() === newAssignment.project_id.toString()
+          );
+
+          if (existingAssignmentIndex >= 0) {
+            // Merge subprojects into existing assignment
+            const existingAssignment = resource.assignments[existingAssignmentIndex];
+            for (const newSp of newAssignment.subprojects) {
+              const spExists = existingAssignment.subprojects?.some(
+                (sp) => sp.subproject_id?.toString() === newSp.subproject_id.toString()
+              );
+              if (!spExists) {
+                if (!existingAssignment.subprojects) {
+                  existingAssignment.subprojects = [];
+                }
+                existingAssignment.subprojects.push(newSp);
+              }
+            }
+          } else {
+            // Add new assignment
+            resource.assignments.push(newAssignment);
+          }
+        }
+
+        resource.name = data.name;
+        resource.role = data.role;
+        await resource.save();
+        stats.updated++;
+      } else {
+        // Create new resource
+        resource = new Resource({
+          name: data.name,
+          email: data.email,
+          role: data.role,
+          status: "active",
+          assignments: newAssignments,
+          login_count: 0,
+          total_logins: 0,
+          otp_attempts: 0,
+        });
+
+        await resource.save();
+        stats.created++;
+      }
     }
 
-    // Cleanup
+    // Clean up
     fs.unlinkSync(filePath);
 
-    console.log(`✅ Completed: ${processedCount} resources, ${billingCreatedCount} billing records`);
+    // If there were errors, return error CSV
+    if (errors.length > 0) {
+      const fields = ["row", "name", "location", "process_type", "client", "geography", "email", "errors"];
+      const parser = new Parser({ fields });
+      const csvOut = parser.parse(errors);
 
-    // Response
-    if (failedRecords.length > 0) {
-      return res.status(207).json({
-        status: "partial_success",
-        message: `Processed ${processedCount} of ${validParsed.length} resources`,
-        summary: {
-          successful: processedCount,
-          failed: failedRecords.length,
-          billingRecordsCreated: billingCreatedCount
-        },
-        failedRecords: failedRecords,
-      });
+      res.setHeader("Content-Disposition", "attachment; filename=resource-upload-errors.csv");
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader("X-Has-Errors", "true");
+      res.setHeader("X-Stats", JSON.stringify(stats));
+      return res.status(207).send(csvOut);
     }
+
+    console.log(`\n🎉 Resource Bulk Upload completed!`);
+    console.log(`   Created: ${stats.created}, Updated: ${stats.updated}, Assignments: ${stats.assignments}`);
 
     return res.json({
       status: "success",
-      message: "Bulk upload completed successfully",
-      summary: {
-        totalRows: validParsed.length,
-        resourcesProcessed: processedCount,
-        billingRecordsCreated: billingCreatedCount,
-        note: "Billing created for each resource-subproject-requestType combination"
-      }
+      message: `Successfully processed ${resourceMap.size} resources`,
+      stats,
     });
-
   } catch (err) {
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-    console.error("❌ File processing error:", err.message);
-    res.status(500).json({ error: "File processing failed: " + err.message });
+    console.error("Resource Bulk upload error:", err);
+    try {
+      fs.unlinkSync(filePath);
+    } catch {}
+    return res.status(500).json({ error: "Failed to process CSV: " + err.message });
   }
 });
 
-// ----------------------------------------
-// ALTERNATIVE: Quick Resource Upload (No Billing)
-// ----------------------------------------
-router.post("/bulk-resources-only", upload.single("file"), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: "CSV file is required" });
-  }
+// =============================================
+// RESOURCE BULK UPLOAD - REPLACE MODE
+// Clears existing assignments before adding new ones
+// =============================================
+router.post("/bulk-replace", upload.single("file"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
   const filePath = req.file.path;
   const rows = [];
 
   try {
-    // Read CSV
+    console.log("⏱️ Resource Bulk Upload (Replace Mode) started...");
+
+    // 1. Read CSV
     await new Promise((resolve, reject) => {
       fs.createReadStream(filePath)
-        .pipe(csv({ mapHeaders: ({ header }) => header.trim().toLowerCase() }))
+        .pipe(
+          csv({
+            mapHeaders: ({ header }) => {
+              const h = header.toLowerCase().trim();
+              if (h === "name" || h === "resource name" || h === "resource") return "name";
+              if (h === "location" || h === "subproject" || h === "sub-project" || h === "sub project") return "location";
+              if (h === "process type" || h === "process_type" || h === "processtype" || h === "project") return "process_type";
+              if (h === "client" || h === "client name" || h === "client_name") return "client";
+              if (h === "geography" || h === "geo" || h === "region") return "geography";
+              if (h === "email" || h === "email id" || h === "email_id" || h === "emailid") return "email";
+              if (h === "role") return "role";
+              return header;
+            },
+          })
+        )
         .on("data", (row) => {
-          if (Object.values(row).some((v) => v)) {
-            rows.push(row);
-          }
+          if (Object.values(row).every((v) => !v)) return;
+          rows.push(row);
         })
         .on("end", resolve)
         .on("error", reject);
     });
 
-    console.log(`📄 Read ${rows.length} rows`);
+    console.log(`📄 Read ${rows.length} rows from CSV`);
 
-    // Load projects and subprojects
-    const allProjects = await Project.find({}).lean();
-    const projectMap = new Map(
-      allProjects.map((p) => [p.name.trim().toLowerCase(), p])
-    );
+    // 2. Validate rows
+    const errors = [];
+    const validRows = [];
 
-    const allSubprojects = await Subproject.find({}).lean();
-    const subprojectByProjectMap = new Map();
-    allSubprojects.forEach(sp => {
-      const pId = sp.project_id.toString();
-      if (!subprojectByProjectMap.has(pId)) {
-        subprojectByProjectMap.set(pId, []);
+    for (let idx = 0; idx < rows.length; idx++) {
+      const r = rows[idx];
+      const rowNum = idx + 2;
+
+      const name = norm(r.name);
+      const location = norm(r.location);
+      const processType = norm(r.process_type);
+      const clientName = norm(r.client);
+      const geographyName = norm(r.geography);
+      const email = norm(r.email);
+      const role = norm(r.role) || "associate";
+
+      const rowErrors = [];
+
+      if (!name) rowErrors.push("Name is required");
+      if (!email) rowErrors.push("Email is required");
+      if (!location) rowErrors.push("Location is required");
+      if (!processType) rowErrors.push("Process Type is required");
+      if (!clientName) rowErrors.push("Client is required");
+      if (!geographyName) rowErrors.push("Geography is required");
+
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        rowErrors.push("Invalid email format");
       }
-      subprojectByProjectMap.get(pId).push(sp);
-    });
 
-    // Process resources
-    const resourceOps = [];
-
-    for (const r of rows) {
-      const name = norm(r["resource name"] || r["name"]);
-      if (!name) continue;
-
-      const generatedEmail = `${name.replace(/\s+/g, '.').toLowerCase()}@placeholder.com`;
-      const email = norm(r["email"] || generatedEmail);
-      const role = norm(r["role"] || "Employee");
-      const projectsRaw = norm(r["process type"] || r["projects"]);
-
-      // Get project IDs
-      const projectIds = projectsRaw
-        ? projectsRaw.split(",")
-            .map(p => p.trim().toLowerCase())
-            .filter(p => projectMap.has(p))
-            .map(p => projectMap.get(p)._id)
-        : [];
-
-      // Get subproject IDs
-      const subprojectIds = [];
-      projectIds.forEach(pid => {
-        const subs = subprojectByProjectMap.get(pid.toString()) || [];
-        subs.forEach(sp => subprojectIds.push(sp._id));
-      });
-
-      resourceOps.push({
-        updateOne: {
-          filter: { email },
-          update: {
-            $set: { name, role },
-            $setOnInsert: { email, avatar_url: DEFAULT_AVATAR },
-            $addToSet: {
-              assigned_projects: { $each: projectIds },
-              assigned_subprojects: { $each: subprojectIds },
-            }
-          },
-          upsert: true
-        }
-      });
+      if (rowErrors.length > 0) {
+        errors.push({
+          row: rowNum,
+          name,
+          location,
+          process_type: processType,
+          client: clientName,
+          geography: geographyName,
+          email,
+          errors: rowErrors.join("; "),
+        });
+      } else {
+        validRows.push({
+          rowNum,
+          name,
+          location,
+          processType,
+          clientName,
+          geographyName,
+          email,
+          role,
+        });
+      }
     }
 
-    // Bulk write
-    if (resourceOps.length > 0) {
-      const result = await Resource.bulkWrite(resourceOps, { ordered: false });
-      console.log(`✅ Resources: ${result.upsertedCount} created, ${result.modifiedCount} updated`);
+    // 3. Process valid rows
+    const resourceMap = new Map();
+
+    for (const row of validRows) {
+      const geography = await Geography.findOne({
+        name: { $regex: new RegExp(`^${row.geographyName}$`, "i") },
+      }).lean();
+
+      if (!geography) {
+        errors.push({
+          row: row.rowNum,
+          name: row.name,
+          location: row.location,
+          process_type: row.processType,
+          client: row.clientName,
+          geography: row.geographyName,
+          email: row.email,
+          errors: `Geography "${row.geographyName}" not found`,
+        });
+        continue;
+      }
+
+      const client = await Client.findOne({
+        geography_id: geography._id,
+        name: { $regex: new RegExp(`^${row.clientName}$`, "i") },
+      }).lean();
+
+      if (!client) {
+        errors.push({
+          row: row.rowNum,
+          name: row.name,
+          location: row.location,
+          process_type: row.processType,
+          client: row.clientName,
+          geography: row.geographyName,
+          email: row.email,
+          errors: `Client "${row.clientName}" not found`,
+        });
+        continue;
+      }
+
+      let project = await Project.findOne({
+        client_id: client._id,
+        name: { $regex: new RegExp(`^${row.processType}$`, "i") },
+      }).lean();
+
+      if (!project) {
+        const processTypeWords = row.processType.toLowerCase().split(/\s+/);
+        const lastWord = processTypeWords[processTypeWords.length - 1];
+        
+        project = await Project.findOne({
+          client_id: client._id,
+          name: { $regex: new RegExp(lastWord, "i") },
+        }).lean();
+      }
+
+      if (!project) {
+        errors.push({
+          row: row.rowNum,
+          name: row.name,
+          location: row.location,
+          process_type: row.processType,
+          client: row.clientName,
+          geography: row.geographyName,
+          email: row.email,
+          errors: `Process Type "${row.processType}" not found`,
+        });
+        continue;
+      }
+
+      const subproject = await Subproject.findOne({
+        project_id: project._id,
+        name: { $regex: new RegExp(`^${row.location}$`, "i") },
+      }).lean();
+
+      if (!subproject) {
+        errors.push({
+          row: row.rowNum,
+          name: row.name,
+          location: row.location,
+          process_type: row.processType,
+          client: row.clientName,
+          geography: row.geographyName,
+          email: row.email,
+          errors: `Location "${row.location}" not found`,
+        });
+        continue;
+      }
+
+      const emailKey = row.email.toLowerCase();
+      if (!resourceMap.has(emailKey)) {
+        resourceMap.set(emailKey, {
+          name: row.name,
+          email: row.email,
+          role: row.role,
+          assignmentsMap: new Map(),
+        });
+      }
+
+      const resourceData = resourceMap.get(emailKey);
+      const assignmentKey = `${geography._id}|${client._id}|${project._id}`;
       
-      fs.unlinkSync(filePath);
-      
-      return res.json({
-        status: "success",
-        message: "Resources uploaded successfully",
-        summary: {
-          created: result.upsertedCount,
-          updated: result.modifiedCount,
-          total: resourceOps.length
-        }
-      });
+      if (!resourceData.assignmentsMap.has(assignmentKey)) {
+        resourceData.assignmentsMap.set(assignmentKey, {
+          geography_id: geography._id,
+          geography_name: geography.name,
+          client_id: client._id,
+          client_name: client.name,
+          project_id: project._id,
+          project_name: project.name,
+          subprojectsMap: new Map(),
+        });
+      }
+
+      const assignment = resourceData.assignmentsMap.get(assignmentKey);
+      const spIdStr = subproject._id.toString();
+      if (!assignment.subprojectsMap.has(spIdStr)) {
+        assignment.subprojectsMap.set(spIdStr, {
+          subproject_id: subproject._id,
+          subproject_name: subproject.name,
+        });
+      }
+    }
+
+    // 4. Create/Update Resources (Replace mode - overwrite assignments)
+    const stats = {
+      created: 0,
+      updated: 0,
+      assignments: 0,
+    };
+
+    for (const [email, data] of resourceMap) {
+      const newAssignments = [];
+      for (const [, assignmentData] of data.assignmentsMap) {
+        const subprojects = Array.from(assignmentData.subprojectsMap.values());
+        newAssignments.push({
+          geography_id: assignmentData.geography_id,
+          geography_name: assignmentData.geography_name,
+          client_id: assignmentData.client_id,
+          client_name: assignmentData.client_name,
+          project_id: assignmentData.project_id,
+          project_name: assignmentData.project_name,
+          subprojects: subprojects,
+        });
+        stats.assignments += subprojects.length;
+      }
+
+      let resource = await Resource.findOne({ email: { $regex: new RegExp(`^${email}$`, "i") } });
+
+      if (resource) {
+        // Replace mode: completely replace assignments
+        resource.name = data.name;
+        resource.role = data.role;
+        resource.assignments = newAssignments;
+        await resource.save();
+        stats.updated++;
+      } else {
+        resource = new Resource({
+          name: data.name,
+          email: data.email,
+          role: data.role,
+          status: "active",
+          assignments: newAssignments,
+          login_count: 0,
+          total_logins: 0,
+          otp_attempts: 0,
+        });
+
+        await resource.save();
+        stats.created++;
+      }
     }
 
     fs.unlinkSync(filePath);
-    return res.json({ status: "success", message: "No valid resources found" });
 
+    if (errors.length > 0) {
+      const fields = ["row", "name", "location", "process_type", "client", "geography", "email", "errors"];
+      const parser = new Parser({ fields });
+      const csvOut = parser.parse(errors);
+
+      res.setHeader("Content-Disposition", "attachment; filename=resource-upload-errors.csv");
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader("X-Has-Errors", "true");
+      res.setHeader("X-Stats", JSON.stringify(stats));
+      return res.status(207).send(csvOut);
+    }
+
+    console.log(`\n🎉 Resource Bulk Upload (Replace) completed!`);
+
+    return res.json({
+      status: "success",
+      message: `Successfully processed ${resourceMap.size} resources`,
+      stats,
+    });
   } catch (err) {
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-    console.error("Error:", err.message);
-    res.status(500).json({ error: err.message });
+    console.error("Resource Bulk upload error:", err);
+    try {
+      fs.unlinkSync(filePath);
+    } catch {}
+    return res.status(500).json({ error: "Failed to process CSV: " + err.message });
   }
 });
-
-// Helper to download error CSV
-function returnErrorCsv(res, filePath, errors) {
-  const parser = new Parser({ fields: ["__row", "name", "errors"] });
-  const csvOut = parser.parse(errors);
-
-  if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-
-  res.setHeader("Content-Disposition", "attachment; filename=upload-errors.csv");
-  res.setHeader("Content-Type", "text/csv");
-  return res.status(400).send(csvOut);
-}
 
 module.exports = router;

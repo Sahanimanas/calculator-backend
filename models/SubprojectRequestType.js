@@ -1,4 +1,4 @@
-// models/SubprojectRequestType.js - UPDATED
+// models/SubprojectRequestType.js - UPDATED to support both Verisma and MRO
 const mongoose = require('mongoose');
 
 const SubprojectRequestTypeSchema = new mongoose.Schema({
@@ -7,9 +7,27 @@ const SubprojectRequestTypeSchema = new mongoose.Schema({
   client_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Client', required: true },
   geography_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Geography', required: true },
   
+  // Request Type Name - Extended to support both Verisma and MRO
   name: { 
     type: String, 
-    enum: ['New Request', 'Key', 'Duplicate'], 
+    enum: [
+      // ============================================
+      // VERISMA REQUEST TYPES
+      // ============================================
+      'New Request', 
+      'Key', 
+      'Duplicate',
+      
+      // ============================================
+      // MRO REQUEST TYPES
+      // ============================================
+      'Batch',
+      'DDS',
+      'E-link',
+      'E-Request',
+      'Follow up',
+      // 'New Request' - already included above
+    ], 
     required: true 
   },
   

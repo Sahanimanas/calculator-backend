@@ -48,8 +48,24 @@ app.use('/api/dashboard', require('./routes/dashboard.route'));
 app.use('/api/geography', require('./routes/geography.routes'));
 app.use('/api/client', require('./routes/client.routes'));
 app.use('/api/masterdb', require('./routes/masterdb.route'));
-app.use('/api/upload', require('./routes/bulkupload.route'));
+app.use('/api/upload', require('./routes/Project Upload/bulkupload.route')); //project upload for verisma
+app.use('/api/mro-upload', require('./routes/Project Upload/upload.mro.routes')); // project upload for the MRO
 app.use('/api/allocation', require('./routes/allocation-upload.routes'));
+//MRO data handling
+// app.use('/api/mro-allocation', require('./routes/mro-allocation.routes'));
+
+
+const mroAllocRoutes = require('./routes/allocation routes/mro-daily-allocations.routes');
+const verismaAllocRoutes = require('./routes/allocation routes/verisma-daily-allocations.routes');
+const datavantAllocRoutes = require('./routes/allocation routes/datavant-daily-allocations.routes');
+
+app.use('/api/mro-daily-allocations', mroAllocRoutes);
+app.use('/api/verisma-daily-allocations', verismaAllocRoutes);
+app.use('/api/datavant-daily-allocations', datavantAllocRoutes);
+
+
+
+
 // app.use('/api/auditlogs', require('./routes/auditlog.route'));
 app.get('/', (req, res) => {
     res.send('API is running...');
